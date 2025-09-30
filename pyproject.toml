@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "rionegromatchup"
+version = "0.1.0"
+description = "Python package and script to validate, model water quality parameters with remote sensing data"
+authors = ["Felipe Sodré <felipe.b4rros@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+geopandas = "^1.1.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
