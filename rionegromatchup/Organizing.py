@@ -1,3 +1,4 @@
+import argparse
 import logging
 from pathlib import Path
 from re import sub
@@ -157,6 +158,15 @@ def merge_stations_campaigns(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Pipeline to organize OAN water quality monitoring data"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["realtime", "campaigns"],
+        required=True,
+        help="What king of data: OAN real time or field campaigns",
+    )
     FINAL_PATH = Path(
         "./datos/mediciones/OAN_tiempo_real/Automatic_WQ_monitoring_stations.csv"
     )
