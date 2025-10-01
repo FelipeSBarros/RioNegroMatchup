@@ -102,7 +102,7 @@ def read_campaigns(campaigns_path: Path) -> pd.DataFrame:
             "id_muestra",
             "codigo_pto",
             "id_estacion",
-            "fecha",
+            "fecha_muestra",
             "observaciones",
             "param",
             "nombre_clave",
@@ -196,6 +196,6 @@ if __name__ == "__main__":
             logger.error("Erro ao ler os arquivos de estações ou campanhas.")
         else:
             campaigns_df = clean_campaigns(campaigns_df)
-            merged_df = merge_stations_campaigns(stations_df, campaigns_df)
+            merged_df = merge_stations_campaigns(campaigns_df, stations_df)
             merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False)
             logger.info(f"Campanhas organizadas salvas em {OUTPUT_CAMPAIGNS_PATH}")
