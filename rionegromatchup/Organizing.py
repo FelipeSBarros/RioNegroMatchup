@@ -69,8 +69,97 @@ def build_final_csv(
     logger.info(f"CSV final salvo em {output_file}")
 
 
+def read_stations(station_path: Path) -> pd.DataFrame:
+    """Lê o CSV final e retorna um DataFrame."""
+    if not station_path.exists():
+        logger.error(f"Arquivo CSV não encontrado: {station_path}")
+        return pd.DataFrame()
+    elif station_path.name.endswith(".xlsx"):
+        stations = pd.read_excel(station_path)
+    else:
+        stations = pd.read_csv(station_path)
+
+    stations = pd.DataFrame(
+        stations, columns=["codigo_pto", "id_estacion", "latitud", "longitud"]
+    )
+    return stations
+
+
+def read_campaigns(campaigns_path: Path) -> pd.DataFrame:
+    """Lê o CSV final e retorna um DataFrame."""
+    if not campaigns_path.exists():
+        logger.error(f"Arquivo CSV não encontrado: {campaigns_path}")
+        return pd.DataFrame()
+    elif campaigns_path.name.endswith(".xlsx"):
+        campaigns = pd.read_excel(campaigns_path)
+    else:
+        campaigns = pd.read_csv(campaigns_path)
+
+    campaigns = pd.DataFrame(
+        campaigns,
+        columns=[
+            "id_muestra",
+            "codigo_pto",
+            "id_estacion",
+            "fecha",
+            "observaciones",
+            "param",
+            "nombre_clave",
+            "parametro",
+            "grupo",
+            "uni_nombre",
+            "valor_original",
+            "limite_deteccion",
+            "limite_cuantificacion",
+            "valor_transformado",
+        ],
+    )
+    return campaigns
+
+
+def clean_value(val):
+    if pd.isna(val):
+        return None
+    # Remover '<' e trocar ',' por '.'
+    val_clean = val.replace("<", "").replace(",", ".")
+    try:
+        return float(val_clean)
+    except ValueError:
+        return None
+
+
+def clean_campaigns(campaigns: pd.DataFrame) -> pd.DataFrame:
+    """Limpa o DataFrame de campanhas."""
+    campaigns["organized_value"] = campaigns["valor_original"]
+    campaigns.loc[campaigns["valor_original"] == "<LD", "organized_value"] = campaigns[
+        "limite_cuantificacion"
+    ]
+
+    campaigns.loc[campaigns["valor_original"] == "<LC", "organized_value"] = campaigns[
+        "limite_cuantificacion"
+    ]
+    campaigns["organized_value"] = campaigns["organized_value"].apply(clean_value)
+    return campaigns
+
+
+def merge_stations_campaigns(
+    stations: pd.DataFrame, campaigns: pd.DataFrame
+) -> pd.DataFrame:
+    """Faz o merge entre estações e campanhas."""
+    merged_df = pd.merge(
+        campaigns,
+        stations,
+        how="left",
+        left_on=["codigo_pto", "id_estacion"],
+        right_on=["codigo_pto", "id_estacion"],
+    )
+    return merged_df
+
+
 if __name__ == "__main__":
-    FINAL_PATH = Path("./datos/mediciones/OAN_tiempo_real/Automatic_WQ_monitoring_stations.csv")
+    FINAL_PATH = Path(
+        "./datos/mediciones/OAN_tiempo_real/Automatic_WQ_monitoring_stations.csv"
+    )
     INPUT_DIR = FINAL_PATH.parent
 
     stations_coords = {
