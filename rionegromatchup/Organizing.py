@@ -197,5 +197,5 @@ if __name__ == "__main__":
         else:
             campaigns_df = clean_campaigns(campaigns_df)
             merged_df = merge_stations_campaigns(campaigns_df, stations_df)
-            merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False)
+            merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False, sep=';')
             logger.info(f"Campanhas organizadas salvas em {OUTPUT_CAMPAIGNS_PATH}")
