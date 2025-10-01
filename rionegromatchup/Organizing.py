@@ -170,13 +170,32 @@ if __name__ == "__main__":
     FINAL_PATH = Path(
         "./datos/mediciones/OAN_tiempo_real/Automatic_WQ_monitoring_stations.csv"
     )
-    INPUT_DIR = FINAL_PATH.parent
+    args = parser.parse_args()
 
-    stations_coords = {
-        ("Blanvira", "Boya_Blanvira"): (-32.840556, -56.570278),
-        ("Blanvira", "Rincon_del_Bonete"): (-32.829722, -56.418889),
-        ("Blanvira", "Baygorria"): (-32.879167, -56.802500),
-    }
+    if args.mode == "realtime":
+        INPUT_DIR = FINAL_PATH.parent
 
-    logger.info("Iniciando script de organização de dados...")
-    build_final_csv(INPUT_DIR, FINAL_PATH, stations_coords)
+        stations_coords = {
+            ("Blanvira", "Boya_Blanvira"): (-32.840556, -56.570278),
+            ("Blanvira", "Rincon_del_Bonete"): (-32.829722, -56.418889),
+            ("Blanvira", "Baygorria"): (-32.879167, -56.802500),
+        }
+
+        logger.info("Iniciando script de organização de dados...")
+        build_final_csv(INPUT_DIR, FINAL_PATH, stations_coords)
+    elif args.mode == "campaigns":
+        STATIONS_PATH = Path("./data/estaciones-seleccionadas.xlsx")
+        CAMPAIGNS_PATH = Path("./data/extraccion_20250930-181325.xlsx")
+        OUTPUT_CAMPAIGNS_PATH = Path(
+            "./data//campaigns_organized.csv"
+        )
+
+        stations_df = read_stations(STATIONS_PATH)
+        campaigns_df = read_campaigns(CAMPAIGNS_PATH)
+        if stations_df.empty or campaigns_df.empty:
+            logger.error("Erro ao ler os arquivos de estações ou campanhas.")
+        else:
+            campaigns_df = clean_campaigns(campaigns_df)
+            merged_df = merge_stations_campaigns(stations_df, campaigns_df)
+            merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False)
+            logger.info(f"Campanhas organizadas salvas em {OUTPUT_CAMPAIGNS_PATH}")
