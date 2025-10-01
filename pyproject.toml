@@ -8,6 +8,9 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.11"
 geopandas = "^1.1.1"
+pandas = "^2.3.3"
+boto3 = "^1.40.42"
+sentinelhub = "^3.11.2"
 
 
 [build-system]
