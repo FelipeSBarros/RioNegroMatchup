@@ -5,26 +5,20 @@ Python package and scripts to:
 - Run [ACOLITE](https://hypercoast.org/) atmosferic Correction and water quality models;  
 - Validate models derived from satelite imagery with field measurements;  
 
+# use examples
 
+## Organizing module
+It will look for Water Quality data, clean and organize it.
 
-## Exemplos de uso
-
-### Só gerar o catálogo JSON (sem download):
-
+In case of using OAN's field campaigns data:
 ```python
-python sentinel_pipeline.py --mode catalog --csv datos/mediciones/mediciones_campo.csv --geojson datos/bbox_rincon.geojson --output datos/sentinel_downloads --time-delta 2
+ python rionegromatchup/Organizing.py --mode campaigns
 ```
+This process will read campaigns data, organize and clean its values, and then merge with stations data, writing the results to `./data/monitoring_data/campaigns_organized.csv`
 
-
-### Só baixar a partir do JSON existente:
-
+Or using OAN's realtime monitoring data:
 ```python
-python sentinel_pipeline.py --mode download --csv datos/mediciones/mediciones_campo.csv --geojson datos/bbox_rincon.geojson --output datos/sentinel_downloads --catalog-json datos/sentinel_catalog.json
+python rionegromatchup/Organizing.py --mode realtime
 ```
-
-### Rodar tudo de uma vez (catalog + download):
-
-```python
-python sentinel_pipeline.py --mode all --csv datos/mediciones/mediciones_campo.csv --geojson datos/bbox_rincon.geojson --output datos/sentinel_downloads --only-first
-```
-
+As realtime monitoring data produces one file for each station, all files will be read and stacked into one DataFrame then merged with stations coordinates.
+The results will be written to `./data/monitoring_data/Automatic_WQ_monitoring_stations.csv`
