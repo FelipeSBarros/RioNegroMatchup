@@ -131,6 +131,12 @@ def clean_value(val):
 
 def clean_campaigns(campaigns: pd.DataFrame) -> pd.DataFrame:
     """Limpa o DataFrame de campanhas."""
+    if "fecha_muestra" in campaigns.columns and "date" not in campaigns.columns:
+        campaigns["fecha_muestra"] = pd.to_datetime(
+            campaigns["fecha_muestra"], errors="coerce"
+        )
+        campaigns = campaigns.rename(columns={"fecha_muestra": "date"})
+
     campaigns["organized_value"] = campaigns["valor_original"]
     campaigns.loc[campaigns["valor_original"] == "<LD", "organized_value"] = campaigns[
         "limite_cuantificacion"
@@ -167,9 +173,7 @@ if __name__ == "__main__":
         required=True,
         help="What king of data: OAN real time or field campaigns",
     )
-    FINAL_PATH = Path(
-        "./datos/mediciones/OAN_tiempo_real/Automatic_WQ_monitoring_stations.csv"
-    )
+    FINAL_PATH = Path("./data/monitoring_data/Automatic_WQ_monitoring_stations.csv")
     args = parser.parse_args()
 
     if args.mode == "realtime":
@@ -186,9 +190,7 @@ if __name__ == "__main__":
     elif args.mode == "campaigns":
         STATIONS_PATH = Path("./data/estaciones-seleccionadas.xlsx")
         CAMPAIGNS_PATH = Path("./data/extraccion_20250930-181325.xlsx")
-        OUTPUT_CAMPAIGNS_PATH = Path(
-            "./data//campaigns_organized.csv"
-        )
+        OUTPUT_CAMPAIGNS_PATH = Path("./data/monitoring_data/campaigns_organized.csv")
 
         stations_df = read_stations(STATIONS_PATH)
         campaigns_df = read_campaigns(CAMPAIGNS_PATH)
@@ -197,5 +199,5 @@ if __name__ == "__main__":
         else:
             campaigns_df = clean_campaigns(campaigns_df)
             merged_df = merge_stations_campaigns(campaigns_df, stations_df)
-            merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False, sep=';')
+            merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False, sep=";")
             logger.info(f"Campanhas organizadas salvas em {OUTPUT_CAMPAIGNS_PATH}")
