@@ -11,6 +11,7 @@ geopandas = "^1.1.1"
 pandas = "^2.3.3"
 boto3 = "^1.40.42"
 sentinelhub = "^3.11.2"
+dotenv = "^0.9.9"
 
 
 [build-system]

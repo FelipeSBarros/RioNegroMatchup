@@ -29,7 +29,7 @@ It will look for Sentinel 2 imagery to match up with field measurements, create 
 ### Create catalog only:
 
 ```python
-python sentinel_pipeline.py --mode catalog --csv datos/mediciones/mediciones_campo.csv --geojson datos/bbox_rincon.geojson --output datos/sentinel_downloads --time-delta 2
+python sentinel_pipeline.py --mode catalog --csv data/monitoring_data/campaigns_organized.csv --geojson data/bbox_rincon.geojson --output data/sentinel_downloads --time-delta 2
 ```
 
 ### Download images from existing catalog:

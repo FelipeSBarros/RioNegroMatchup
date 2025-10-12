@@ -4,6 +4,7 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
 import pandas as pd
 import geopandas as gpd
@@ -12,6 +13,8 @@ from sentinelhub import CRS, BBox, DataCollection, SHConfig, SentinelHubCatalog
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 config = SHConfig()
 config.sh_client_id = os.getenv("SH_CLIENT_ID")
@@ -70,7 +73,10 @@ def search_images(bbox, date: str, time_delta: int, cloud_cover: int):
 def build_catalog(
     csv_file: Path, geojson_file: Path, output_json: Path, time_delta=1, cloud_cover=10
 ):
-    df = pd.read_csv(csv_file)
+    df = pd.read_csv(csv_file, sep=";")
+    if "date" not in df.columns:
+        raise ValueError("date column not found in CSV")
+
     bbox = load_area(geojson_file)
 
     catalog_data = []
