@@ -5,6 +5,10 @@ Python package and scripts to:
 - Run [ACOLITE](https://hypercoast.org/) atmospheric correction and water quality models;  
 - Validate models derived from satellite imagery with field measurements;  
 
+# Overview
+
+![](./Workflow.png)
+
 # Use Examples
 
 ## Organizing module
