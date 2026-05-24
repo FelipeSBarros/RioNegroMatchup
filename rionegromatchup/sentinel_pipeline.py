@@ -79,15 +79,16 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
                 query={"eo:cloud_cover": {"lt": cloud_cover}},
             )
             search_l2a = list(search_l2a.items())
-            items.append(
-                {
-                    "id": item["id"],
-                    "datetime": item["properties"]["datetime"],
-                    "cloud_cover": item["properties"]["eo:cloud_cover"],
-                    "href": item["assets"]["data"]["href"],
-                    "l2a_cls": search_l2a[0].assets.get("scl").href,
-                }
-            )
+            if search_l2a:
+                items.append(
+                    {
+                        "id": item["id"],
+                        "datetime": item["properties"]["datetime"],
+                        "cloud_cover": item["properties"]["eo:cloud_cover"],
+                        "href": item["assets"]["data"]["href"],
+                        "l2a_cls": search_l2a[0].assets.get("scl").href,
+                    }
+                )
 
     return items
 
@@ -109,7 +110,9 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
 
         logger.info(f"Processando data de campo: {date}")
         images = search_images(bbox_geometry, date, time_delta, cloud_cover)
-        catalog_data.append({"field_date": date, "images_found": images})
+        catalog_data.append(
+            {"field_date": date, "images_found": images}
+        )  # todo creo que va un if aca
 
     with open(output_json, "w") as f:
         json.dump(catalog_data, f, indent=2)
@@ -137,11 +140,12 @@ def download_scl_asset(output_dir: Path, id: str, scl_asset_href: str):
     """Baixa o asset SCL de uma cena Sentinel-2 L2A"""
     resp = requests.get(scl_asset_href, stream=True)
     resp.raise_for_status()
-    with open(f'{output_dir}/{id}_SCL.tif', "wb") as f:
+    with open(f"{output_dir}/{id}_SCL.tif", "wb") as f:
         for chunk in resp.iter_content(chunk_size=8192):
             f.write(chunk)
     logger.info(f"Asset SCL salvo")
     return None
+
 
 def check_safe_downloaded(product_id: str, output_dir: Path) -> bool:
     """Verifica se o produto SAFE já foi baixado"""
@@ -171,10 +175,8 @@ def check_product_downloaded(
 ) -> tuple[bool, bool]:
     """Verifica o status de download de SAFE e SCL"""
     safe_downloaded = check_safe_downloaded(product_id, output_dir)
-    id = product_id.split('.')[0]
-    scl_downloaded = (
-        check_scl_downloaded(id, output_dir) if download_scl else True
-    )
+    id = product_id.split(".")[0]
+    scl_downloaded = check_scl_downloaded(id, output_dir) if download_scl else True
 
     return safe_downloaded, scl_downloaded
 
@@ -234,7 +236,7 @@ def run_download(
 
                 # Baixa o asset SCL se necessário
                 if download_scl and not scl_downloaded:
-                    id = product_id.split('.')[0]
+                    id = product_id.split(".")[0]
                     if download_scl_asset(output_dir, id, img["l2a_cls"]):
                         stats["scl_downloaded"] += 1
                         logger.info(f"✓ SCL baixado: {id}")

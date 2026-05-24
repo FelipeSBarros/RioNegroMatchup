@@ -47,7 +47,7 @@ The `sentinel_pipeline.py` script automates the process of finding and downloadi
 ### Create catalog only:
 
 ```bash
-python sentinel_pipeline.py --mode catalog \
+python rionegromatchup/sentinel_pipeline.py --mode catalog \
   --csv data/monitoring_data/campaigns_organized.csv \
   --output data/sentinel_downloads \
   --time-delta 2 \
@@ -57,7 +57,7 @@ python sentinel_pipeline.py --mode catalog \
 ### Download images from existing catalog (with SCL assets):
 
 ```bash
-python sentinel_pipeline.py --mode download \
+python rionegromatchup/sentinel_pipeline.py --mode download \
   --catalog-json data/sentinel_catalog.json \
   --output data/sentinel_downloads \
   --download-scl \
@@ -67,7 +67,7 @@ python sentinel_pipeline.py --mode download \
 ### Create catalog and download images in one step:
 
 ```bash
-python sentinel_pipeline.py --mode all \
+python rionegromatchup/sentinel_pipeline.py --mode all \
   --csv data/monitoring_data/campaigns_organized.csv \
   --output data/sentinel_downloads \
   --time-delta 1 \
@@ -79,7 +79,7 @@ python sentinel_pipeline.py --mode all \
 ### Full download (all matching images):
 
 ```bash
-python sentinel_pipeline.py --mode all \
+python rionegromatchup/sentinel_pipeline.py --mode all \
   --csv data/monitoring_data/campaigns_organized.csv \
   --output data/sentinel_downloads \
   --time-delta 2 \
