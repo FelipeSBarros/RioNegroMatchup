@@ -79,15 +79,16 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
                 query={"eo:cloud_cover": {"lt": cloud_cover}},
             )
             search_l2a = list(search_l2a.items())
-            items.append(
-                {
-                    "id": item["id"],
-                    "datetime": item["properties"]["datetime"],
-                    "cloud_cover": item["properties"]["eo:cloud_cover"],
-                    "href": item["assets"]["data"]["href"],
-                    "l2a_cls": search_l2a[0].assets.get("scl").href,
-                }
-            )
+            if search_l2a:
+                items.append(
+                    {
+                        "id": item["id"],
+                        "datetime": item["properties"]["datetime"],
+                        "cloud_cover": item["properties"]["eo:cloud_cover"],
+                        "href": item["assets"]["data"]["href"],
+                        "l2a_cls": search_l2a[0].assets.get("scl").href,
+                    }
+                )
 
     return items
 
@@ -109,7 +110,9 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
 
         logger.info(f"Processando data de campo: {date}")
         images = search_images(bbox_geometry, date, time_delta, cloud_cover)
-        catalog_data.append({"field_date": date, "images_found": images})
+        catalog_data.append(
+            {"field_date": date, "images_found": images}
+        )  # todo creo que va un if aca
 
     with open(output_json, "w") as f:
         json.dump(catalog_data, f, indent=2)
@@ -137,46 +140,49 @@ def download_scl_asset(output_dir: Path, id: str, scl_asset_href: str):
     """Baixa o asset SCL de uma cena Sentinel-2 L2A"""
     resp = requests.get(scl_asset_href, stream=True)
     resp.raise_for_status()
-    with open(f'{output_dir}/{id}_SCL.tif', "wb") as f:
+    with open(f"{output_dir}/{id}_SCL.tif", "wb") as f:
         for chunk in resp.iter_content(chunk_size=8192):
             f.write(chunk)
     logger.info(f"Asset SCL salvo")
     return None
 
-def check_safe_downloaded(product_id: str, output_dir: Path) -> bool:
-    """Verifica se o produto SAFE já foi baixado"""
-    # O produto SAFE geralmente cria uma pasta com o nome do product_id
+
+def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -> dict:
+    """
+    Retorna o status de download para SAFE e SCL (se aplicável)
+
+    Returns:
+        dict: {
+            'safe_exists': bool,
+            'scl_exists': bool (ou None se download_scl=False),
+            'all_downloaded': bool  # True se tudo que precisa já foi baixado
+        }
+    """
+    # Verifica SAFE
     safe_folder = Path(output_dir, product_id)
-    if safe_folder.exists() and safe_folder.is_dir():
-        # Verifica se a pasta não está vazia
-        if any(safe_folder.iterdir()):
-            return True
+    safe_file = Path(output_dir) / f"{product_id}.SAFE"
+    safe_exists = (
+        safe_folder.exists() and safe_folder.is_dir() and any(safe_folder.iterdir())
+    ) or safe_file.exists()
 
-    # Alternativa: verifica por arquivo .SAFE
-    safe_file = output_dir / f"{product_id}.SAFE"
-    if safe_file.exists():
-        return True
+    # Verifica SCL apenas se necessário
+    scl_exists = None
+    if download_scl:
+        product_core_id = product_id.split(".")[0]
+        scl_path = Path(output_dir) / f"{product_core_id}_SCL.tif"
+        scl_exists = scl_path.exists()
 
-    return False
+    # Determina se tudo que precisamos já foi baixado
+    if download_scl:
+        all_downloaded = safe_exists and scl_exists
+    else:
+        all_downloaded = safe_exists
 
-
-def check_scl_downloaded(product_id: str, output_dir: Path) -> bool:
-    """Verifica se o arquivo SCL já foi baixado"""
-    scl_files = Path(output_dir, f"{product_id}_SCL.tif")
-    return scl_files.exists()
-
-
-def check_product_downloaded(
-    product_id: str, output_dir: Path, download_scl: bool
-) -> tuple[bool, bool]:
-    """Verifica o status de download de SAFE e SCL"""
-    safe_downloaded = check_safe_downloaded(product_id, output_dir)
-    id = product_id.split('.')[0]
-    scl_downloaded = (
-        check_scl_downloaded(id, output_dir) if download_scl else True
-    )
-
-    return safe_downloaded, scl_downloaded
+    return {
+        "safe_exists": safe_exists,
+        "scl_exists": scl_exists,
+        "all_downloaded": all_downloaded,
+    }
 
 
 def run_download(
@@ -205,27 +211,22 @@ def run_download(
         for img in to_download:
             stats["total_processed"] += 1
             product_id = img["id"]
-            product_path = "/".join(img["href"].split("/")[9:])
+            product_path = "/".join(img["href"].split("/")[3:])
+            product_core_id = product_id.split(".")[0]
 
-            # Verifica status de download
-            safe_downloaded, scl_downloaded = check_product_downloaded(
-                product_id, output_dir, download_scl
-            )
+            # Verifica status atual
+            status = get_download_status(product_id, output_dir, download_scl)
 
-            # Se ambos já foram baixados, pula
-            if safe_downloaded:
-                logger.info(f"[{field_date}] {product_id} já baixado - pulando")
-                stats["already_downloaded"] += 1
-            if scl_downloaded:
-                logger.info(f" SCL [{field_date}] {product_id} já baixado - pulando")
+            # Se tudo já foi baixado, pula
+            if status["all_downloaded"]:
+                logger.info(f"[{field_date}] {product_id} - tudo já baixado, pulando")
                 stats["already_downloaded"] += 1
                 continue
 
-            logger.info(f"[{field_date}] Baixando {product_id}...")
-
             try:
                 # Baixa o produto SAFE se necessário
-                if not safe_downloaded:
+                if not status["safe_exists"]:
+                    logger.info(f"[{field_date}] Baixando {product_id}...")
                     download_product(s3.Bucket("eodata"), product_path, output_dir)
                     stats["safe_downloaded"] += 1
                     logger.info(f"✓ SAFE baixado: {product_id}")
@@ -233,13 +234,16 @@ def run_download(
                     logger.info(f"✓ SAFE já existe: {product_id}")
 
                 # Baixa o asset SCL se necessário
-                if download_scl and not scl_downloaded:
-                    id = product_id.split('.')[0]
-                    if download_scl_asset(output_dir, id, img["l2a_cls"]):
-                        stats["scl_downloaded"] += 1
-                        logger.info(f"✓ SCL baixado: {id}")
-                elif download_scl:
-                    logger.info(f"✓ SCL já existe: {id}")
+                if download_scl and not status["scl_exists"]:
+                    logger.info(f"  Baixando SCL...")
+                    download_scl_asset(output_dir, product_core_id, img["l2a_cls"])
+                    stats["scl_downloaded"] += 1
+                    logger.info(f"  ✓ SCL baixado")
+                elif download_scl and status["scl_exists"]:
+                    logger.info(f"  ✓ SCL já existia")
+                elif not download_scl:
+                    stats["skipped_no_need"] += 1
+                    logger.info(f"  ℹ SCL não solicitado para download")
 
             except Exception as e:
                 logger.error(f"✗ Erro ao baixar {id}: {e}")
@@ -272,14 +276,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Baixar asset SCL junto com produtos SAFE",
     )
+    parser.add_argument("--csv", type=Path, help="CSV com datas de campo")
     parser.add_argument(
-        "--csv", type=Path, required=True, help="CSV com datas de campo"
-    )
-    parser.add_argument("--output", type=Path, required=True, help="Diretório de saída")
-    parser.add_argument(
-        "--catalog-json",
+        "--output",
         type=Path,
-        default=Path("sentinel_catalog.json"),
+        default=Path("data/sentinel_downloads"),
+        help="Diretório de saída",
+    )
+    parser.add_argument(
+        "--output-json",
+        type=Path,
+        default=Path("data/sentinel_downloads/sentinel_catalog.json"),
         help="Arquivo JSON de catálogo",
     )
     parser.add_argument(
@@ -297,14 +304,14 @@ if __name__ == "__main__":
     if args.mode in ("catalog", "all"):
         build_catalog(
             args.csv,
-            args.catalog_json,
+            args.output_json,
             time_delta=args.time_delta,
             cloud_cover=args.cloud_cover,
         )
 
     if args.mode in ("download", "all"):
         run_download(
-            args.catalog_json,
+            args.output_json,
             args.output,
             only_first=args.only_first,
             download_scl=args.download_scl,
