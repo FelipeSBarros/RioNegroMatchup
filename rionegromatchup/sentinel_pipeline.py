@@ -84,10 +84,14 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
 
         # Point 4 fix: extract the acquisition date from this specific L1C item
         # and use a narrow ±0 day window to find its L2A counterpart
-        acquisition_datetime = item["properties"]["datetime"]  # e.g. "2025-08-01T10:10:31Z"
-        acquisition_date = acquisition_datetime[:10]           # e.g. "2025-08-01"
+        acquisition_datetime = item["properties"][
+            "datetime"
+        ]  # e.g. "2025-08-01T10:10:31Z"
+        acquisition_date = acquisition_datetime[:10]  # e.g. "2025-08-01"
 
-        logger.info(f"  Buscando L2A correspondente para {item_id} ({acquisition_date})")
+        logger.info(
+            f"  Buscando L2A correspondente para {item_id} ({acquisition_date})"
+        )
 
         l2a_results = list(
             client.search(
@@ -105,18 +109,22 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
             if not scl_href:
                 logger.warning(f"  SCL asset não encontrado para {item_id}")
         else:
-            logger.warning(f"  Nenhuma cena L2A encontrada para {item_id} em {acquisition_date}")
+            logger.warning(
+                f"  Nenhuma cena L2A encontrada para {item_id} em {acquisition_date}"
+            )
 
         delta_days = abs((datetime.fromisoformat(acquisition_date) - date_obj).days)
 
-        items.append({
-            "id": item_id,
-            "datetime": acquisition_datetime,
-            "cloud_cover": item["properties"]["eo:cloud_cover"],
-            "href": item["assets"]["data"]["href"],
-            "delta_days": delta_days,
-            "l2a_cls": scl_href,  # may be None if no L2A match found
-        })
+        items.append(
+            {
+                "id": item_id,
+                "datetime": acquisition_datetime,
+                "cloud_cover": item["properties"]["eo:cloud_cover"],
+                "href": item["assets"]["data"]["href"],
+                "delta_days": delta_days,
+                "l2a_cls": scl_href,  # may be None if no L2A match found
+            }
+        )
 
     logger.info(f"Total de cenas encontradas: {len(items)}")
     return items
