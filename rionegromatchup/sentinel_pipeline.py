@@ -1,16 +1,16 @@
-import os
+import argparse
 import json
 import logging
-import argparse
-from pathlib import Path
+import os
+from collections import defaultdict
 from datetime import datetime, timedelta
-from pystac_client import Client
+from pathlib import Path
 
+import boto3
+import pandas as pd
 import requests
 from dotenv import load_dotenv
-
-import pandas as pd
-import boto3
+from pystac_client import Client
 from sentinelhub import CRS, BBox, DataCollection, SHConfig, SentinelHubCatalog
 
 logging.basicConfig(level=logging.INFO)
@@ -140,7 +140,6 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
     unique_dates_places = df[["date", "longitud", "latitud"]].drop_duplicates()
 
     # Accumulate all images grouped by date, deduplicating by scene ID
-    from collections import defaultdict
 
     scenes_by_date: dict[str, dict] = defaultdict(dict)
 

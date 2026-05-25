@@ -140,7 +140,7 @@ The pipeline efficiently matches field measurements with satellite overpasses an
 | 4 | `search_images` | L2A search runs inside L1C loop but ignores per-item context | High | ✅ Done |
 | 5 | `build_catalog` | Hardcoded `sep=";"` incompatible with realtime CSV output (comma-separated) | High | ⏳ Pending |
 | 6 | `download_product` | `bucket.download_file` called incorrectly on `boto3` Bucket object | High | ✅ Done |
-| 7 | Catalog | No deduplication when same scene covers multiple stations on the same date | Medium | ⏳ Pending |
+| 7 | Catalog | No deduplication when same scene covers multiple stations on the same date | Medium | ✅ Done |
 | 8 | Spatial | Fixed `buffer_degrees=0.01` with no footprint overlap validation | Medium | ⏳ Pending |
 | 9 | Validation | No satellite vs. field measurement comparison implemented | Medium | ⏳ Pending |
 | 10 | ACOLITE | No atmospheric correction integration despite being a core project goal | Medium | ⏳ Pending |
