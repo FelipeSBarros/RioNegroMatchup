@@ -53,43 +53,72 @@ def create_bbox_from_point(lon: float, lat: float, buffer_degrees=0.01):
 
 
 def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
-    """Busca imagens Sentinel-2 L1C ± time_delta dias da data de campo."""
+    """
+    Busca imagens Sentinel-2 L1C ± time_delta dias da data de campo,
+    e para cada cena L1C encontrada, busca a cena L2A correspondente
+    pela mesma data de aquisição.
+    """
     date_obj = datetime.fromisoformat(date)
     start = (date_obj - timedelta(days=time_delta)).strftime("%Y-%m-%d")
     end = (date_obj + timedelta(days=time_delta)).strftime("%Y-%m-%d")
 
-    logger.info(f"Buscando imagens entre {start} e {end} (cloud < {cloud_cover})")
+    logger.info(f"Buscando imagens entre {start} e {end} (cloud < {cloud_cover}%)")
 
-    search_l1c = catalog.search(
-        DataCollection.SENTINEL2_L1C,
-        bbox=bbox_geometry,
-        time=(start, end),
-        filter=f"eo:cloud_cover < {cloud_cover}",
+    # Point 3 fix: convert to list once, with a clear variable name
+    l1c_results = list(
+        catalog.search(
+            DataCollection.SENTINEL2_L1C,
+            bbox=bbox_geometry,
+            time=(start, end),
+            filter=f"eo:cloud_cover < {cloud_cover}",
+        )
     )
+
+    if not l1c_results:
+        logger.info("Nenhuma cena L1C encontrada.")
+        return []
+
     items = []
-    search_l1c = list(search_l1c)
-    if search_l1c:
-        for item in search_l1c:
-            # item = search_l1c[0]
+    for item in l1c_results:
+        item_id = item["id"]
 
-            search_l2a = client.search(
-                collections=["sentinel-2-l2a"],  # "sentinel-s2-l2a-cogs"],
+        # Point 4 fix: extract the acquisition date from this specific L1C item
+        # and use a narrow ±0 day window to find its L2A counterpart
+        acquisition_datetime = item["properties"]["datetime"]  # e.g. "2025-08-01T10:10:31Z"
+        acquisition_date = acquisition_datetime[:10]           # e.g. "2025-08-01"
+
+        logger.info(f"  Buscando L2A correspondente para {item_id} ({acquisition_date})")
+
+        l2a_results = list(
+            client.search(
+                collections=["sentinel-2-l2a"],
                 bbox=bbox_geometry,
-                datetime=(start, end),
+                datetime=f"{acquisition_date}/{acquisition_date}",
                 query={"eo:cloud_cover": {"lt": cloud_cover}},
-            )
-            search_l2a = list(search_l2a.items())
-            if search_l2a:
-                items.append(
-                    {
-                        "id": item["id"],
-                        "datetime": item["properties"]["datetime"],
-                        "cloud_cover": item["properties"]["eo:cloud_cover"],
-                        "href": item["assets"]["data"]["href"],
-                        "l2a_cls": search_l2a[0].assets.get("scl").href,
-                    }
-                )
+            ).items()
+        )
 
+        scl_href = None
+        if l2a_results:
+            scl_asset = l2a_results[0].assets.get("scl")
+            scl_href = scl_asset.href if scl_asset else None
+            if not scl_href:
+                logger.warning(f"  SCL asset não encontrado para {item_id}")
+        else:
+            logger.warning(f"  Nenhuma cena L2A encontrada para {item_id} em {acquisition_date}")
+
+        delta_days = abs((datetime.fromisoformat(acquisition_date) - date_obj).days)
+
+        items.append({
+            "id": item_id,
+            "datetime": acquisition_datetime,
+            "cloud_cover": item["properties"]["eo:cloud_cover"],
+            "href": item["assets"]["data"]["href"],
+            "delta_days": delta_days,
+            "l2a_cls": scl_href,  # may be None if no L2A match found
+        })
+
+    logger.info(f"Total de cenas encontradas: {len(items)}")
     return items
 
 
@@ -121,19 +150,37 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
 
 
 def download_product(bucket, product: str, output_dir: Path):
-    """Baixa todos os arquivos de um produto Sentinel."""
-    files = bucket.objects.filter(Prefix=product)
-    if not list(files):
-        raise FileNotFoundError(f"Nenhum arquivo encontrado para {product}")
+    """
+    Baixa todos os arquivos de um produto Sentinel do bucket S3.
 
-    for file in files:
-        local_file = output_dir / file.key
-        if not local_file.exists():
-            os.makedirs(local_file.parent, exist_ok=True)
-            bucket.download_file(file.key, str(local_file))
-            logger.info(f"Baixado: {local_file}")
-        else:
+    Args:
+        bucket: boto3 Bucket resource object
+        product: S3 prefix path to the product
+        output_dir: local directory to save downloaded files
+    """
+    # Point 6 fix: materialize once to avoid exhausting the iterator on the existence check
+    files = list(bucket.objects.filter(Prefix=product))
+
+    if not files:
+        raise FileNotFoundError(f"Nenhum arquivo encontrado para o produto: {product}")
+
+    logger.info(f"Encontrados {len(files)} arquivos para {product}")
+
+    for obj in files:
+        local_file = output_dir / obj.key
+        if local_file.exists():
             logger.info(f"Já existe: {local_file}")
+            continue
+
+        os.makedirs(local_file.parent, exist_ok=True)
+
+        try:
+            # Point 6 fix: correct boto3 API — download via the Object resource
+            bucket.Object(obj.key).download_file(str(local_file))
+            logger.info(f"Baixado: {local_file}")
+        except Exception as e:
+            logger.error(f"Erro ao baixar {obj.key}: {e}")
+            raise
 
 
 def download_scl_asset(output_dir: Path, id: str, scl_asset_href: str):

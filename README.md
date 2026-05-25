@@ -129,3 +129,20 @@ DATASPACE_SECRET_KEY=your_copernicus_dataspace_secret_key
 - **SCL Assets**: Scene Classification Maps from L2A products
 
 The pipeline efficiently matches field measurements with satellite overpasses and downloads the necessary data for subsequent atmospheric correction and water quality analysis with ACOLITE.
+
+# Tasks
+
+| # | Area | Issue | Priority | Status |
+|---|------|-------|----------|--------|
+| 1 | Tests | `load_area` imported but doesn't exist in `sentinel_pipeline.py` | High | ⏳ Pending |
+| 2 | Tests | `build_catalog` signature mismatch between tests and implementation | High | ⏳ Pending |
+| 3 | `search_images` | Generator exhausted before loop; `list()` cast misplaced | High | ✅ Done |
+| 4 | `search_images` | L2A search runs inside L1C loop but ignores per-item context | High | ✅ Done |
+| 5 | `build_catalog` | Hardcoded `sep=";"` incompatible with realtime CSV output (comma-separated) | High | ⏳ Pending |
+| 6 | `download_product` | `bucket.download_file` called incorrectly on `boto3` Bucket object | High | ✅ Done |
+| 7 | Catalog | No deduplication when same scene covers multiple stations on the same date | Medium | ⏳ Pending |
+| 8 | Spatial | Fixed `buffer_degrees=0.01` with no footprint overlap validation | Medium | ⏳ Pending |
+| 9 | Validation | No satellite vs. field measurement comparison implemented | Medium | ⏳ Pending |
+| 10 | ACOLITE | No atmospheric correction integration despite being a core project goal | Medium | ⏳ Pending |
+| 11 | Logging | Inconsistent use of `logger` vs. inline strings in download report | Low | ⏳ Pending |
+| 12 | CSV separator | `Organizing.py` uses different separators for realtime vs. campaigns output | Low | ⏳ Pending |
