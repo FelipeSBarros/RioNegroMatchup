@@ -139,22 +139,43 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
 
     unique_dates_places = df[["date", "longitud", "latitud"]].drop_duplicates()
 
-    catalog_data = []
+    # Accumulate all images grouped by date, deduplicating by scene ID
+    from collections import defaultdict
+
+    scenes_by_date: dict[str, dict] = defaultdict(dict)
+
     for idx, row in unique_dates_places.iterrows():
-        # idx, row = list(unique_dates_places.iterrows())[0]
         date = row["date"]
         bbox_geometry = create_bbox_from_point(row["longitud"], row["latitud"])
 
-        logger.info(f"Processando data de campo: {date}")
+        logger.info(
+            f"Processando data {date} | lon={row['longitud']} lat={row['latitud']}"
+        )
         images = search_images(bbox_geometry, date, time_delta, cloud_cover)
-        catalog_data.append(
-            {"field_date": date, "images_found": images}
-        )  # todo creo que va un if aca
+
+        for img in images:
+            scene_id = img["id"]
+            if scene_id not in scenes_by_date[date]:
+                scenes_by_date[date][scene_id] = img
+                logger.info(f"  Nova cena adicionada: {scene_id}")
+            else:
+                logger.info(f"  Cena duplicada ignorada: {scene_id}")
+
+    # Build final catalog list
+    catalog_data = [
+        {
+            "field_date": date,
+            "images_found": list(scenes.values()),
+        }
+        for date, scenes in scenes_by_date.items()
+    ]
 
     with open(output_json, "w") as f:
         json.dump(catalog_data, f, indent=2)
 
-    logger.info(f"Catálogo salvo em {output_json}")
+    logger.info(
+        f"Catálogo salvo em {output_json} ({len(catalog_data)} datas processadas)"
+    )
 
 
 def download_product(bucket, product: str, output_dir: Path):

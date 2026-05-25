@@ -134,8 +134,8 @@ The pipeline efficiently matches field measurements with satellite overpasses an
 
 | # | Area | Issue | Priority | Status |
 |---|------|-------|----------|--------|
-| 1 | Tests | `load_area` imported but doesn't exist in `sentinel_pipeline.py` | High | ⏳ Pending |
-| 2 | Tests | `build_catalog` signature mismatch between tests and implementation | High | ⏳ Pending |
+| 1 | Tests | `load_area` imported but doesn't exist in `sentinel_pipeline.py` | High | ✅ Done |
+| 2 | Tests | `build_catalog` signature mismatch between tests and implementation | High | ✅ Done |
 | 3 | `search_images` | Generator exhausted before loop; `list()` cast misplaced | High | ✅ Done |
 | 4 | `search_images` | L2A search runs inside L1C loop but ignores per-item context | High | ✅ Done |
 | 5 | `build_catalog` | Hardcoded `sep=";"` incompatible with realtime CSV output (comma-separated) | High | ⏳ Pending |

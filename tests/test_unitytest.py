@@ -232,6 +232,42 @@ class TestBuildCatalog:
         with pytest.raises(ValueError, match="longitud"):
             build_catalog(csv_file, tmp_path / "out.json")
 
+    def test_deduplicates_same_scene_across_stations(self, tmp_path):
+        """Same scene returned for two different station points on the same date
+        should appear only once in the catalog."""
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {
+                "date": ["2025-08-01", "2025-08-01"],  # same date
+                "longitud": [-56.5, -56.6],  # different stations
+                "latitud": [-32.85, -32.90],
+            }
+        ).to_csv(csv_file, index=False, sep=";")
+
+        output_json = tmp_path / "catalog.json"
+
+        # Both stations return the same scene ID
+        fake_image = {
+            "id": "S2A_20250801T101031",  # same ID
+            "datetime": "2025-08-01T10:10:31.000Z",
+            "cloud_cover": 5,
+            "href": "https://fake-link.com/product",
+            "delta_days": 0,
+            "l2a_cls": "https://fake-link.com/SCL.tif",
+        }
+
+        with patch(
+            "rionegromatchup.sentinel_pipeline.search_images", return_value=[fake_image]
+        ):
+            build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
+
+        with open(output_json) as f:
+            data = json.load(f)
+
+        assert len(data) == 1  # one date entry
+        assert len(data[0]["images_found"]) == 1  # scene appears only once
+        assert data[0]["images_found"][0]["id"] == "S2A_20250801T101031"
+
 
 class TestGetDownloadStatus:
     """Tests for get_download_status."""
@@ -421,18 +457,24 @@ class TestCleanCampaigns:
             }
         )
 
-    @pytest.mark.skip(reason="clean_value does not handle float input yet — to be fixed in Organizing.py")
+    @pytest.mark.skip(
+        reason="clean_value does not handle float input yet — to be fixed in Organizing.py"
+    )
     def test_renames_fecha_to_date(self):
         df = clean_campaigns(self._make_df())
         assert "date" in df.columns
         assert "fecha_muestra" not in df.columns
 
-    @pytest.mark.skip(reason="clean_value does not handle float input yet — to be fixed in Organizing.py")
+    @pytest.mark.skip(
+        reason="clean_value does not handle float input yet — to be fixed in Organizing.py"
+    )
     def test_replaces_LD_with_limite_cuantificacion(self):
         df = clean_campaigns(self._make_df())
         assert df.loc[0, "organized_value"] == pytest.approx(0.2)
 
-    @pytest.mark.skip(reason="clean_value does not handle float input yet — to be fixed in Organizing.py")
+    @pytest.mark.skip(
+        reason="clean_value does not handle float input yet — to be fixed in Organizing.py"
+    )
     def test_parses_comma_decimal(self):
         df = clean_campaigns(self._make_df())
         assert df.loc[1, "organized_value"] == pytest.approx(1.5)
