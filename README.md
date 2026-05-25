@@ -49,7 +49,6 @@ The `sentinel_pipeline.py` script automates the process of finding and downloadi
 ```bash
 python rionegromatchup/sentinel_pipeline.py --mode catalog \
   --csv data/monitoring_data/campaigns_organized.csv \
-  --output data/sentinel_downloads \
   --time-delta 2 \
   --cloud-cover 20
 ```
@@ -125,6 +124,8 @@ SH_CLIENT_SECRET=your_sentinelhub_client_secret
 DATASPACE_ACCESS_KEY=your_copernicus_dataspace_access_key
 DATASPACE_SECRET_KEY=your_copernicus_dataspace_secret_key
 ```
+
+[See documentation](https://documentation.dataspace.copernicus.eu/APIs/S3.html#example-script-to-download-product-using-boto3) for more info about KEY and Secret
 
 ## Data Sources
 - **Sentinel-2 L1C**: Copernicus Dataspace (via SentinelHub)
