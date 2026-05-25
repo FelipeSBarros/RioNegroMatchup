@@ -197,6 +197,7 @@ def run_download(
         "safe_downloaded": 0,
         "scl_downloaded": 0,
         "errors": 0,
+        "skipped_no_need": 0,
     }
 
     for entry in catalog_data:

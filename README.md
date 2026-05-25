@@ -57,8 +57,6 @@ python rionegromatchup/sentinel_pipeline.py --mode catalog \
 
 ```bash
 python rionegromatchup/sentinel_pipeline.py --mode download \
-  --catalog-json data/sentinel_catalog.json \
-  --output data/sentinel_downloads \
   --download-scl \
   --only-first
 ```
@@ -68,7 +66,6 @@ python rionegromatchup/sentinel_pipeline.py --mode download \
 ```bash
 python rionegromatchup/sentinel_pipeline.py --mode all \
   --csv data/monitoring_data/campaigns_organized.csv \
-  --output data/sentinel_downloads \
   --time-delta 1 \
   --cloud-cover 10 \
   --download-scl \
@@ -80,7 +77,6 @@ python rionegromatchup/sentinel_pipeline.py --mode all \
 ```bash
 python rionegromatchup/sentinel_pipeline.py --mode all \
   --csv data/monitoring_data/campaigns_organized.csv \
-  --output data/sentinel_downloads \
   --time-delta 2 \
   --cloud-cover 15 \
   --download-scl
