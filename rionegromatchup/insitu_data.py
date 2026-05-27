@@ -187,7 +187,7 @@ def merge_stations_campaigns(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Pipeline to organize OAN water quality monitoring data"
+        description="Pipeline to organize OAN in situ water quality monitoring data"
     )
     parser.add_argument(
         "--mode",

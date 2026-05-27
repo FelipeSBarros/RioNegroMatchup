@@ -1,28 +1,23 @@
 import json
-import os
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import geopandas as gpd
 import pandas as pd
 import pytest
 from sentinelhub import BBox, CRS
-from shapely.geometry import Polygon
 
+from rionegromatchup.insitu_data import (
+    setup_names,
+    clean_campaigns,
+    merge_stations_campaigns,
+    clean_value,
+)
 from rionegromatchup.sentinel_pipeline import (
     create_bbox_from_point,
     search_images,
     build_catalog,
     run_download,
     get_download_status,
-    download_scl_asset,
-)
-from rionegromatchup.Organizing import (
-    setup_names,
-    clean_campaigns,
-    merge_stations_campaigns,
-    clean_value,
 )
 
 # ==============================================================================
@@ -87,7 +82,6 @@ class TestSearchImages:
         with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
             "rionegromatchup.sentinel_pipeline.client"
         ) as mock_client:
-
             mock_catalog.search.return_value = iter([self._make_fake_l1c_item()])
             mock_search = MagicMock()
             mock_search.items.return_value = [self._make_fake_l2a_item()]
@@ -101,7 +95,6 @@ class TestSearchImages:
         with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
             "rionegromatchup.sentinel_pipeline.client"
         ) as mock_client:
-
             mock_catalog.search.return_value = iter([self._make_fake_l1c_item()])
             mock_search = MagicMock()
             mock_search.items.return_value = [self._make_fake_l2a_item()]
@@ -127,7 +120,6 @@ class TestSearchImages:
         with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
             "rionegromatchup.sentinel_pipeline.client"
         ) as mock_client:
-
             mock_catalog.search.return_value = iter(
                 [self._make_fake_l1c_item(date=acquisition_date)]
             )
@@ -150,7 +142,6 @@ class TestSearchImages:
         with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
             "rionegromatchup.sentinel_pipeline.client"
         ) as mock_client:
-
             mock_catalog.search.return_value = iter([self._make_fake_l1c_item()])
             mock_search = MagicMock()
             mock_search.items.return_value = []  # no L2A found
@@ -364,7 +355,6 @@ class TestRunDownload:
                 "all_downloaded": False,
             },
         ):
-
             run_download(catalog_json, tmp_path, only_first=True, download_scl=False)
             assert mock_dl.call_count == 2  # one per date
 
@@ -382,7 +372,6 @@ class TestRunDownload:
                 "all_downloaded": False,
             },
         ):
-
             run_download(catalog_json, tmp_path, only_first=False, download_scl=False)
             assert mock_dl.call_count == 3  # IMG1 + IMG2 + IMG3
 
@@ -398,13 +387,12 @@ class TestRunDownload:
                 "all_downloaded": True,
             },
         ):
-
             run_download(catalog_json, tmp_path, only_first=True, download_scl=True)
             mock_dl.assert_not_called()
 
 
 # ==============================================================================
-# Organizing.py tests
+# insitu_data.py tests
 # ==============================================================================
 
 
