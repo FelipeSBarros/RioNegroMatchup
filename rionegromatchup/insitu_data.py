@@ -121,8 +121,12 @@ def read_campaigns(campaigns_path: Path) -> pd.DataFrame:
 def clean_value(val):
     if pd.isna(val):
         return None
-    # Remover '<' e trocar ',' por '.'
-    val_clean = val.replace("<", "").replace(",", ".")
+    # If already a number (e.g. substituted from limite_deteccion/cuantificacion), return directly
+    if isinstance(val, (int, float)):
+        return float(val)
+    # Remove '<', '>' and replace ',' with '.'
+    val_clean = str(val).replace("<", "").replace(">", "").replace(",", ".")
+    # Handle 'LD<X<LC' pattern — not a simple numeric, handled upstream
     try:
         return float(val_clean)
     except ValueError:
@@ -138,13 +142,31 @@ def clean_campaigns(campaigns: pd.DataFrame) -> pd.DataFrame:
         campaigns = campaigns.rename(columns={"fecha_muestra": "date"})
 
     campaigns["organized_value"] = campaigns["valor_original"]
-    campaigns.loc[campaigns["valor_original"] == "<LD", "organized_value"] = campaigns[
-        "limite_cuantificacion"
+
+    # <LD → substitute with limite_deteccion (not limite_cuantificacion)
+    mask_ld = campaigns["valor_original"] == "<LD"
+    campaigns.loc[mask_ld, "organized_value"] = campaigns.loc[
+        mask_ld, "limite_deteccion"
     ]
 
-    campaigns.loc[campaigns["valor_original"] == "<LC", "organized_value"] = campaigns[
-        "limite_cuantificacion"
+    # <LC → substitute with limite_cuantificacion
+    mask_lc = campaigns["valor_original"] == "<LC"
+    campaigns.loc[mask_lc, "organized_value"] = campaigns.loc[
+        mask_lc, "limite_cuantificacion"
     ]
+
+    # LD<X<LC → substitute with limite_cuantificacion
+    mask_between = (
+        campaigns["valor_original"]
+        .str.upper()
+        .str.contains(r"LD\s*<\s*X\s*<\s*LC", na=False, regex=True)
+    )
+    campaigns.loc[mask_between, "organized_value"] = campaigns.loc[
+        mask_between, "limite_cuantificacion"
+    ]
+
+    # <X and >X (numeric) are handled by clean_value below (strips < and >)
+
     campaigns["organized_value"] = campaigns["organized_value"].apply(clean_value)
     return campaigns
 
@@ -165,7 +187,7 @@ def merge_stations_campaigns(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Pipeline to organize OAN water quality monitoring data"
+        description="Pipeline to organize OAN in situ water quality monitoring data"
     )
     parser.add_argument(
         "--mode",

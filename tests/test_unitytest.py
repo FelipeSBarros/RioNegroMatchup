@@ -1,28 +1,23 @@
 import json
-import os
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import geopandas as gpd
 import pandas as pd
 import pytest
 from sentinelhub import BBox, CRS
-from shapely.geometry import Polygon
 
+from rionegromatchup.insitu_data import (
+    setup_names,
+    clean_campaigns,
+    merge_stations_campaigns,
+    clean_value,
+)
 from rionegromatchup.sentinel_pipeline import (
     create_bbox_from_point,
     search_images,
     build_catalog,
     run_download,
     get_download_status,
-    download_scl_asset,
-)
-from rionegromatchup.Organizing import (
-    setup_names,
-    clean_campaigns,
-    merge_stations_campaigns,
-    clean_value,
 )
 
 # ==============================================================================
@@ -87,7 +82,6 @@ class TestSearchImages:
         with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
             "rionegromatchup.sentinel_pipeline.client"
         ) as mock_client:
-
             mock_catalog.search.return_value = iter([self._make_fake_l1c_item()])
             mock_search = MagicMock()
             mock_search.items.return_value = [self._make_fake_l2a_item()]
@@ -101,7 +95,6 @@ class TestSearchImages:
         with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
             "rionegromatchup.sentinel_pipeline.client"
         ) as mock_client:
-
             mock_catalog.search.return_value = iter([self._make_fake_l1c_item()])
             mock_search = MagicMock()
             mock_search.items.return_value = [self._make_fake_l2a_item()]
@@ -127,7 +120,6 @@ class TestSearchImages:
         with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
             "rionegromatchup.sentinel_pipeline.client"
         ) as mock_client:
-
             mock_catalog.search.return_value = iter(
                 [self._make_fake_l1c_item(date=acquisition_date)]
             )
@@ -150,7 +142,6 @@ class TestSearchImages:
         with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
             "rionegromatchup.sentinel_pipeline.client"
         ) as mock_client:
-
             mock_catalog.search.return_value = iter([self._make_fake_l1c_item()])
             mock_search = MagicMock()
             mock_search.items.return_value = []  # no L2A found
@@ -364,7 +355,6 @@ class TestRunDownload:
                 "all_downloaded": False,
             },
         ):
-
             run_download(catalog_json, tmp_path, only_first=True, download_scl=False)
             assert mock_dl.call_count == 2  # one per date
 
@@ -382,7 +372,6 @@ class TestRunDownload:
                 "all_downloaded": False,
             },
         ):
-
             run_download(catalog_json, tmp_path, only_first=False, download_scl=False)
             assert mock_dl.call_count == 3  # IMG1 + IMG2 + IMG3
 
@@ -398,13 +387,12 @@ class TestRunDownload:
                 "all_downloaded": True,
             },
         ):
-
             run_download(catalog_json, tmp_path, only_first=True, download_scl=True)
             mock_dl.assert_not_called()
 
 
 # ==============================================================================
-# Organizing.py tests
+# insitu_data.py tests
 # ==============================================================================
 
 
@@ -457,27 +445,70 @@ class TestCleanCampaigns:
             }
         )
 
-    @pytest.mark.skip(
-        reason="clean_value does not handle float input yet — to be fixed in Organizing.py"
-    )
     def test_renames_fecha_to_date(self):
         df = clean_campaigns(self._make_df())
         assert "date" in df.columns
         assert "fecha_muestra" not in df.columns
 
-    @pytest.mark.skip(
-        reason="clean_value does not handle float input yet — to be fixed in Organizing.py"
-    )
-    def test_replaces_LD_with_limite_cuantificacion(self):
+    def test_replaces_LD_with_limite_deteccion(self):
         df = clean_campaigns(self._make_df())
+        assert df.loc[0, "organized_value"] == pytest.approx(0.1)
+
+    def test_replaces_LC_with_limite_cuantificacion(self):
+        df = clean_campaigns(
+            pd.DataFrame(
+                {
+                    "fecha_muestra": ["2025-03-10"],
+                    "valor_original": ["<LC"],
+                    "limite_deteccion": [0.1],
+                    "limite_cuantificacion": [0.2],
+                }
+            )
+        )
         assert df.loc[0, "organized_value"] == pytest.approx(0.2)
 
-    @pytest.mark.skip(
-        reason="clean_value does not handle float input yet — to be fixed in Organizing.py"
-    )
     def test_parses_comma_decimal(self):
         df = clean_campaigns(self._make_df())
         assert df.loc[1, "organized_value"] == pytest.approx(1.5)
+
+    def test_replaces_LD_between_LC_with_limite_cuantificacion(self):
+        df = clean_campaigns(
+            pd.DataFrame(
+                {
+                    "fecha_muestra": ["2025-04-01"],
+                    "valor_original": ["LD<X<LC"],
+                    "limite_deteccion": [0.1],
+                    "limite_cuantificacion": [0.2],
+                }
+            )
+        )
+        assert df.loc[0, "organized_value"] == pytest.approx(0.2)
+
+    def test_strips_less_than_numeric(self):
+        df = clean_campaigns(
+            pd.DataFrame(
+                {
+                    "fecha_muestra": ["2025-05-01"],
+                    "valor_original": ["<1,0"],
+                    "limite_deteccion": [None],
+                    "limite_cuantificacion": [None],
+                }
+            )
+        )
+        assert df.loc[0, "organized_value"] == pytest.approx(1.0)
+
+    def test_strips_greater_than_numeric(self):
+        df = clean_campaigns(
+            pd.DataFrame(
+                {
+                    "fecha_muestra": ["2025-06-01"],
+                    "valor_original": [">2000"],
+                    "limite_deteccion": [None],
+                    "limite_cuantificacion": [None],
+                }
+            )
+        )
+        assert df.loc[0, "organized_value"] == pytest.approx(2000.0)
 
 
 class TestMergeStationsCampaigns:
