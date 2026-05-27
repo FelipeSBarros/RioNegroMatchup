@@ -12,7 +12,7 @@ from rionegromatchup.insitu_data import (
     merge_stations_campaigns,
     clean_value,
 )
-from rionegromatchup.sentinel_pipeline import (
+from rionegromatchup.sentinel_data import (
     create_bbox_from_point,
     search_images,
     build_catalog,
@@ -21,7 +21,7 @@ from rionegromatchup.sentinel_pipeline import (
 )
 
 # ==============================================================================
-# sentinel_pipeline.py tests
+# sentinel_data.py tests
 # ==============================================================================
 
 
@@ -79,8 +79,8 @@ class TestSearchImages:
 
     def test_returns_list(self):
         bbox = create_bbox_from_point(-56.5, -32.85)
-        with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
-            "rionegromatchup.sentinel_pipeline.client"
+        with patch("rionegromatchup.sentinel_data.catalog") as mock_catalog, patch(
+            "rionegromatchup.sentinel_data.client"
         ) as mock_client:
             mock_catalog.search.return_value = iter([self._make_fake_l1c_item()])
             mock_search = MagicMock()
@@ -92,8 +92,8 @@ class TestSearchImages:
 
     def test_returns_correct_keys(self):
         bbox = create_bbox_from_point(-56.5, -32.85)
-        with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
-            "rionegromatchup.sentinel_pipeline.client"
+        with patch("rionegromatchup.sentinel_data.catalog") as mock_catalog, patch(
+            "rionegromatchup.sentinel_data.client"
         ) as mock_client:
             mock_catalog.search.return_value = iter([self._make_fake_l1c_item()])
             mock_search = MagicMock()
@@ -117,8 +117,8 @@ class TestSearchImages:
         field_date = "2025-08-01"
         acquisition_date = "2025-08-02"
 
-        with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
-            "rionegromatchup.sentinel_pipeline.client"
+        with patch("rionegromatchup.sentinel_data.catalog") as mock_catalog, patch(
+            "rionegromatchup.sentinel_data.client"
         ) as mock_client:
             mock_catalog.search.return_value = iter(
                 [self._make_fake_l1c_item(date=acquisition_date)]
@@ -132,15 +132,15 @@ class TestSearchImages:
 
     def test_returns_empty_when_no_l1c_found(self):
         bbox = create_bbox_from_point(-56.5, -32.85)
-        with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog:
+        with patch("rionegromatchup.sentinel_data.catalog") as mock_catalog:
             mock_catalog.search.return_value = iter([])
             result = search_images(bbox, "2025-08-01", time_delta=1, cloud_cover=10)
             assert result == []
 
     def test_l2a_cls_is_none_when_no_l2a_found(self):
         bbox = create_bbox_from_point(-56.5, -32.85)
-        with patch("rionegromatchup.sentinel_pipeline.catalog") as mock_catalog, patch(
-            "rionegromatchup.sentinel_pipeline.client"
+        with patch("rionegromatchup.sentinel_data.catalog") as mock_catalog, patch(
+            "rionegromatchup.sentinel_data.client"
         ) as mock_client:
             mock_catalog.search.return_value = iter([self._make_fake_l1c_item()])
             mock_search = MagicMock()
@@ -177,7 +177,7 @@ class TestBuildCatalog:
             "l2a_cls": "https://fake-link.com/SCL.tif",
         }
         with patch(
-            "rionegromatchup.sentinel_pipeline.search_images", return_value=[fake_image]
+            "rionegromatchup.sentinel_data.search_images", return_value=[fake_image]
         ):
             build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
 
@@ -195,7 +195,7 @@ class TestBuildCatalog:
             "l2a_cls": "https://fake-link.com/SCL.tif",
         }
         with patch(
-            "rionegromatchup.sentinel_pipeline.search_images", return_value=[fake_image]
+            "rionegromatchup.sentinel_data.search_images", return_value=[fake_image]
         ):
             build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
 
@@ -248,7 +248,7 @@ class TestBuildCatalog:
         }
 
         with patch(
-            "rionegromatchup.sentinel_pipeline.search_images", return_value=[fake_image]
+            "rionegromatchup.sentinel_data.search_images", return_value=[fake_image]
         ):
             build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
 
@@ -344,11 +344,11 @@ class TestRunDownload:
     def test_only_first_downloads_one_per_date(self, tmp_path):
         catalog_json = self._make_catalog(tmp_path)
         with patch(
-            "rionegromatchup.sentinel_pipeline.download_product"
+            "rionegromatchup.sentinel_data.download_product"
         ) as mock_dl, patch(
-            "rionegromatchup.sentinel_pipeline.download_scl_asset"
+            "rionegromatchup.sentinel_data.download_scl_asset"
         ), patch(
-            "rionegromatchup.sentinel_pipeline.get_download_status",
+            "rionegromatchup.sentinel_data.get_download_status",
             return_value={
                 "safe_exists": False,
                 "scl_exists": False,
@@ -361,11 +361,11 @@ class TestRunDownload:
     def test_all_images_downloaded_when_not_only_first(self, tmp_path):
         catalog_json = self._make_catalog(tmp_path)
         with patch(
-            "rionegromatchup.sentinel_pipeline.download_product"
+            "rionegromatchup.sentinel_data.download_product"
         ) as mock_dl, patch(
-            "rionegromatchup.sentinel_pipeline.download_scl_asset"
+            "rionegromatchup.sentinel_data.download_scl_asset"
         ), patch(
-            "rionegromatchup.sentinel_pipeline.get_download_status",
+            "rionegromatchup.sentinel_data.get_download_status",
             return_value={
                 "safe_exists": False,
                 "scl_exists": False,
@@ -378,9 +378,9 @@ class TestRunDownload:
     def test_skips_already_downloaded(self, tmp_path):
         catalog_json = self._make_catalog(tmp_path)
         with patch(
-            "rionegromatchup.sentinel_pipeline.download_product"
+            "rionegromatchup.sentinel_data.download_product"
         ) as mock_dl, patch(
-            "rionegromatchup.sentinel_pipeline.get_download_status",
+            "rionegromatchup.sentinel_data.get_download_status",
             return_value={
                 "safe_exists": True,
                 "scl_exists": True,

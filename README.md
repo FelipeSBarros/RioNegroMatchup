@@ -29,9 +29,9 @@ The results will be written to `./data/monitoring_data/Automatic_WQ_monitoring_s
 
 ---
 
-## Sentinel Pipeline Module
+## [sentinel_data](./rionegromatchup/sentinel_data.py) Module
 
-The `sentinel_pipeline.py` script automates the process of finding and downloading Sentinel-2 imagery that matches field measurement dates and locations.
+The `sentinel_data.py` script automates the process of finding and downloading Sentinel-2 imagery that matches field measurement dates and locations.
 
 ### Key Features:
 - **Dual Catalog Search**: Uses both SentinelHub (L1C products) and EarthSearch (L2A products)
@@ -49,7 +49,7 @@ The `sentinel_pipeline.py` script automates the process of finding and downloadi
 ### Create catalog only:
 
 ```bash
-python rionegromatchup/sentinel_pipeline.py --mode catalog \
+python rionegromatchup/sentinel_data.py --mode catalog \
   --csv data/monitoring_data/campaigns_organized.csv \
   --time-delta 2 \
   --cloud-cover 20
@@ -58,7 +58,7 @@ python rionegromatchup/sentinel_pipeline.py --mode catalog \
 ### Download images from existing catalog (with SCL assets):
 
 ```bash
-python rionegromatchup/sentinel_pipeline.py --mode download \
+python rionegromatchup/sentinel_data.py --mode download \
   --download-scl \
   --only-first
 ```
@@ -66,7 +66,7 @@ python rionegromatchup/sentinel_pipeline.py --mode download \
 ### Create catalog and download images in one step:
 
 ```bash
-python rionegromatchup/sentinel_pipeline.py --mode all \
+python rionegromatchup/sentinel_data.py --mode all \
   --csv data/monitoring_data/campaigns_organized.csv \
   --time-delta 1 \
   --cloud-cover 10 \
@@ -77,7 +77,7 @@ python rionegromatchup/sentinel_pipeline.py --mode all \
 ### Full download (all matching images):
 
 ```bash
-python rionegromatchup/sentinel_pipeline.py --mode all \
+python rionegromatchup/sentinel_data.py --mode all \
   --csv data/monitoring_data/campaigns_organized.csv \
   --time-delta 2 \
   --cloud-cover 15 \
@@ -412,7 +412,7 @@ result = cfg.run()
 
 | # | Area | Issue                                                                         | Priority | Status |
 |---|------|-------------------------------------------------------------------------------|----------|--------|
-| 1 | Tests | `load_area` imported but doesn't exist in `sentinel_pipeline.py`              | High | ✅ Done |
+| 1 | Tests | `load_area` imported but doesn't exist in `sentinel_data.py`                  | High | ✅ Done |
 | 2 | Tests | `build_catalog` signature mismatch between tests and implementation           | High | ✅ Done |
 | 3 | `search_images` | Generator exhausted before loop; `list()` cast misplaced                      | High | ✅ Done |
 | 4 | `search_images` | L2A search runs inside L1C loop but ignores per-item context                  | High | ✅ Done |

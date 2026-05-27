@@ -1336,9 +1336,9 @@ class AcoliteConfig:
         inputfile:
             Path to the matched Sentinel-2 SAFE product.
         time_delta_days:
-            Unused here; kept for API consistency with sentinel_pipeline.
+            Unused here; kept for API consistency with sentinel_data.
         cloud_cover_max:
-            Unused here; kept for API consistency with sentinel_pipeline.
+            Unused here; kept for API consistency with sentinel_data.
         **kwargs:
             Override defaults in the nested config sections. Keys must
             match section attribute names (e.g. glint=GlintConfig(...)).
