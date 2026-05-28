@@ -137,7 +137,7 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
     if "longitud" not in df.columns or "latitud" not in df.columns:
         raise ValueError("longitud or latitud columns not found in CSV")
 
-    unique_dates_places = df[["date", "longitud", "latitud"]].drop_duplicates()
+    unique_dates_places = df[["date", "longitud", "latitud"]].drop_duplicates() # TODO not necessary
 
     # Accumulate all images grouped by date, deduplicating by scene ID
 
@@ -350,9 +350,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--download-scl",
         action="store_true",
+        default=True,
         help="Baixar asset SCL junto com produtos SAFE",
     )
-    parser.add_argument("--csv", type=Path, help="CSV com datas de campo")
+    parser.add_argument("--csv", type=Path,
+                        default=Path("./data/monitoring_data/campaigns_unique_data.csv"),
+                        help="CSV com datas de campo")
     parser.add_argument(
         "--output",
         type=Path,
@@ -372,6 +375,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--only-first",
         action="store_true",
+        default=True,
         help="Baixar apenas a primeira imagem encontrada",
     )
 
