@@ -137,7 +137,7 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
     if "longitud" not in df.columns or "latitud" not in df.columns:
         raise ValueError("longitud or latitud columns not found in CSV")
 
-    unique_dates_places = df[["date", "longitud", "latitud"]].drop_duplicates() # TODO not necessary
+    unique_dates_places = df[["date", "longitud", "latitud"]].drop_duplicates() # TODO not necessary as the duplication is being removed in insitu_data.py
 
     # Accumulate all images grouped by date, deduplicating by scene ID
 
