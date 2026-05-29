@@ -412,18 +412,4 @@ result = cfg.run()
 
 | # | Area | Issue                                                                         | Priority | Status |
 |---|------|-------------------------------------------------------------------------------|----------|--------|
-| 1 | Tests | `load_area` imported but doesn't exist in `sentinel_data.py`                  | High | ✅ Done |
-| 2 | Tests | `build_catalog` signature mismatch between tests and implementation           | High | ✅ Done |
-| 3 | `search_images` | Generator exhausted before loop; `list()` cast misplaced                      | High | ✅ Done |
-| 4 | `search_images` | L2A search runs inside L1C loop but ignores per-item context                  | High | ✅ Done |
-| 5 | `build_catalog` | Hardcoded `sep=";"` incompatible with realtime CSV output (comma-separated)   | High | ⏳ Pending |
-| 6 | `download_product` | `bucket.download_file` called incorrectly on `boto3` Bucket object            | High | ✅ Done |
-| 7 | Catalog | No deduplication when same scene covers multiple stations on the same date    | Medium | ✅ Done |
-| 8 | Spatial | Fixed `buffer_degrees=0.01` with no footprint overlap validation              | Medium | ⏳ Pending |
 | 9 | Validation | No satellite vs. field measurement comparison implemented                     | Medium | ⏳ Pending |
-| 10 | ACOLITE | No atmospheric correction integration despite being a core project goal       | Medium | ✅ Done |
-| 11 | Logging | Inconsistent use of `logger` vs. inline strings in download report            | Low | ⏳ Pending |
-| 12 | CSV separator | `insitu_data.py` uses different separators for realtime vs. campaigns output  | Low | ⏳ Pending |
-| 13 | ACOLITE | Batch processing over a list of SAFE folders                                  | Medium | ✅ Done |
-| 14 | ACOLITE | Spatio-temporal datacube with `time` dimension via `append_l2w_to_datacube()` | Medium | ✅ Done |
-| 15 | ACOLITE | Cloud-native export: per-scene Zarr + COG via `convert_l2w_to_zarr_cog()`     | Medium | ✅ Done |

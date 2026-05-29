@@ -131,7 +131,7 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
 
 
 def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=10):
-    df = pd.read_csv(csv_file, sep=";")
+    df = pd.read_csv(csv_file, sep=None, engine="python")
     if "date" not in df.columns:
         raise ValueError("date column not found in CSV")
     if "longitud" not in df.columns or "latitud" not in df.columns:
@@ -322,7 +322,7 @@ def run_download(
                     logger.info(f"  ℹ SCL não solicitado para download")
 
             except Exception as e:
-                logger.error(f"✗ Erro ao baixar {id}: {e}")
+                logger.error(f"✗ Erro ao baixar {product_id}: {e}")
                 stats["errors"] += 1
 
     # Relatório final

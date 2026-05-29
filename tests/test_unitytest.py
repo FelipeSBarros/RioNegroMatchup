@@ -162,7 +162,7 @@ class TestBuildCatalog:
                 "longitud": [-56.5, -56.5],
                 "latitud": [-32.85, -32.85],
             }
-        ).to_csv(csv_file, index=False, sep=";")
+        ).to_csv(csv_file, index=False)
         return csv_file
 
     def test_creates_json_output(self, tmp_path):
@@ -219,7 +219,7 @@ class TestBuildCatalog:
 
     def test_raises_on_missing_coordinate_columns(self, tmp_path):
         csv_file = tmp_path / "bad.csv"
-        pd.DataFrame({"date": ["2025-08-01"]}).to_csv(csv_file, index=False, sep=";")
+        pd.DataFrame({"date": ["2025-08-01"], 'code': 42}).to_csv(csv_file, index=False, sep=",")
         with pytest.raises(ValueError, match="longitud"):
             build_catalog(csv_file, tmp_path / "out.json")
 
@@ -258,6 +258,42 @@ class TestBuildCatalog:
         assert len(data) == 1  # one date entry
         assert len(data[0]["images_found"]) == 1  # scene appears only once
         assert data[0]["images_found"][0]["id"] == "S2A_20250801T101031"
+
+    def test_reads_comma_separated_csv(self, tmp_path):
+        csv_file = tmp_path / "campaigns_comma.csv"
+        pd.DataFrame(
+            {
+                "date": ["2025-08-01"],
+                "longitud": [-56.5],
+                "latitud": [-32.85],
+            }
+        ).to_csv(
+            csv_file, index=False
+        )  # default sep=","
+        output_json = tmp_path / "catalog.json"
+        fake_image = {
+            "id": "S2A_20250801T101031",
+            "datetime": "2025-08-01T10:10:31.000Z",
+            "cloud_cover": 5,
+            "href": "https://fake-link.com/product",
+            "delta_days": 0,
+            "l2a_cls": "https://fake-link.com/SCL.tif",
+        }
+        with patch(
+            "rionegromatchup.sentinel_data.search_images", return_value=[fake_image]
+        ):
+            build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
+        assert output_json.exists()
+
+    def test_entry_created_when_no_images_found(self, tmp_path):
+        csv_file = self._make_csv(tmp_path)
+        output_json = tmp_path / "catalog.json"
+        with patch("rionegromatchup.sentinel_data.search_images", return_value=[]):
+            build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
+        with open(output_json) as f:
+            data = json.load(f)
+        assert len(data) == 0
+        assert data == []
 
 
 class TestGetDownloadStatus:
@@ -343,9 +379,7 @@ class TestRunDownload:
 
     def test_only_first_downloads_one_per_date(self, tmp_path):
         catalog_json = self._make_catalog(tmp_path)
-        with patch(
-            "rionegromatchup.sentinel_data.download_product"
-        ) as mock_dl, patch(
+        with patch("rionegromatchup.sentinel_data.download_product") as mock_dl, patch(
             "rionegromatchup.sentinel_data.download_scl_asset"
         ), patch(
             "rionegromatchup.sentinel_data.get_download_status",
@@ -360,9 +394,7 @@ class TestRunDownload:
 
     def test_all_images_downloaded_when_not_only_first(self, tmp_path):
         catalog_json = self._make_catalog(tmp_path)
-        with patch(
-            "rionegromatchup.sentinel_data.download_product"
-        ) as mock_dl, patch(
+        with patch("rionegromatchup.sentinel_data.download_product") as mock_dl, patch(
             "rionegromatchup.sentinel_data.download_scl_asset"
         ), patch(
             "rionegromatchup.sentinel_data.get_download_status",
@@ -377,9 +409,7 @@ class TestRunDownload:
 
     def test_skips_already_downloaded(self, tmp_path):
         catalog_json = self._make_catalog(tmp_path)
-        with patch(
-            "rionegromatchup.sentinel_data.download_product"
-        ) as mock_dl, patch(
+        with patch("rionegromatchup.sentinel_data.download_product") as mock_dl, patch(
             "rionegromatchup.sentinel_data.get_download_status",
             return_value={
                 "safe_exists": True,
