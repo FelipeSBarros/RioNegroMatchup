@@ -2,11 +2,18 @@ import argparse
 import logging
 from pathlib import Path
 from re import sub
+from typing import Optional
 
+import mgrs
 import pandas as pd
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Maximum number of columns allowed in the campaigns spreadsheet before
+# we consider it to be in wide format (the long-format export has ~14 cols).
+MAX_CAMPAIGNS_COLUMNS = 35
+m = mgrs.MGRS()
 
 
 def setup_names(excel_path: Path) -> tuple[str, str]:
@@ -83,11 +90,29 @@ def read_stations(station_path: Path) -> pd.DataFrame:
     stations = pd.DataFrame(
         stations, columns=["codigo_pto", "id_estacion", "latitud", "longitud"]
     )
+    # Assign Sentinel-2 scene
+    logger.info(f"Atribuindo cenas Sentinel-2 a partir de coordenadas...")
+    stations["s2_tile"] = stations.apply(
+        lambda row: get_s2_tile(
+            row["latitud"],
+            row["longitud"],
+        ),
+        axis=1,
+    )
     return stations
 
 
 def read_campaigns(campaigns_path: Path) -> pd.DataFrame:
-    """Lê o CSV final e retorna um DataFrame."""
+    """
+    Lê e valida o arquivo de campanhas.
+
+    Raises
+    ------
+    ValueError
+        Se o arquivo contiver mais de MAX_CAMPAIGNS_COLUMNS colunas,
+        indicando que foi exportado no formato largo (wide) em vez do
+        formato longo (long) requerido.
+    """
     if not campaigns_path.exists():
         logger.error(f"Arquivo CSV não encontrado: {campaigns_path}")
         return pd.DataFrame()
@@ -95,6 +120,17 @@ def read_campaigns(campaigns_path: Path) -> pd.DataFrame:
         campaigns = pd.read_excel(campaigns_path)
     else:
         campaigns = pd.read_csv(campaigns_path)
+
+    # --- Validação de formato ---
+    if len(campaigns.columns) > MAX_CAMPAIGNS_COLUMNS:
+        raise ValueError(
+            f"O arquivo de campanhas '{campaigns_path.name}' contém "
+            f"{len(campaigns.columns)} colunas, o que indica que foi exportado "
+            f"no formato LARGO (wide format). "
+            f"Por favor, faça o download novamente selecionando o formato "
+            f"LONGO (long format) no site do OAN. "
+            f"O formato longo possui no máximo {MAX_CAMPAIGNS_COLUMNS} colunas."
+        )
 
     campaigns = pd.DataFrame(
         campaigns,
@@ -118,15 +154,65 @@ def read_campaigns(campaigns_path: Path) -> pd.DataFrame:
     return campaigns
 
 
-def clean_value(val):
+def clean_value(
+    val,
+    limite_deteccion=None,
+    limite_cuantificacion=None,
+) -> Optional[float]:
+    """
+    Limpa e converte um valor de medição para float.
+
+    Regras de substituição (aplicadas antes da conversão numérica):
+      - ``<LD``            → limite_deteccion
+      - ``<LC``            → limite_cuantificacion
+      - ``LD<X<LC``        → limite_cuantificacion
+      - ``<X`` ou ``>X``   → valor numérico X (strip dos símbolos < / >)
+      - vírgula decimal    → substituída por ponto
+
+    Parameters
+    ----------
+    val:
+        Valor original da coluna ``valor_original``.
+    limite_deteccion:
+        Valor do limite de detecção para esta linha (usado quando val == '<LD').
+    limite_cuantificacion:
+        Valor do limite de quantificação para esta linha
+        (usado quando val == '<LC' ou 'LD<X<LC').
+
+    Returns
+    -------
+    float or None
+        Valor numérico convertido, ou None se a conversão falhar.
+    """
+    import re
+
     if pd.isna(val):
         return None
-    # If already a number (e.g. substituted from limite_deteccion/cuantificacion), return directly
+
+    # Already numeric — return directly
     if isinstance(val, (int, float)):
         return float(val)
-    # Remove '<', '>' and replace ',' with '.'
-    val_clean = str(val).replace("<", "").replace(">", "").replace(",", ".")
-    # Handle 'LD<X<LC' pattern — not a simple numeric, handled upstream
+
+    val_str = str(val).strip()
+
+    # --- Symbolic substitutions that require context columns ---
+    if val_str == "<LD":
+        if limite_deteccion is not None and not pd.isna(limite_deteccion):
+            return float(limite_deteccion)
+        return None
+
+    if val_str == "<LC":
+        if limite_cuantificacion is not None and not pd.isna(limite_cuantificacion):
+            return float(limite_cuantificacao := limite_cuantificacion)
+        return None
+
+    if re.fullmatch(r"LD\s*<\s*X\s*<\s*LC", val_str, flags=re.IGNORECASE):
+        if limite_cuantificacion is not None and not pd.isna(limite_cuantificacion):
+            return float(limite_cuantificacion)
+        return None
+
+    # --- Numeric strings with leading < or > ---
+    val_clean = val_str.replace("<", "").replace(">", "").replace(",", ".")
     try:
         return float(val_clean)
     except ValueError:
@@ -134,40 +220,27 @@ def clean_value(val):
 
 
 def clean_campaigns(campaigns: pd.DataFrame) -> pd.DataFrame:
-    """Limpa o DataFrame de campanhas."""
+    """
+    Limpa o DataFrame de campanhas substituindo valores simbólicos e
+    normalizando a coluna 'organized_value'.
+
+    A lógica de substituição (<LD, <LC, LD<X<LC) está centralizada em
+    ``clean_value``, que recebe os valores dos limites por linha.
+    """
     if "fecha_muestra" in campaigns.columns and "date" not in campaigns.columns:
         campaigns["fecha_muestra"] = pd.to_datetime(
             campaigns["fecha_muestra"], errors="coerce"
         )
         campaigns = campaigns.rename(columns={"fecha_muestra": "date"})
 
-    campaigns["organized_value"] = campaigns["valor_original"]
-
-    # <LD → substitute with limite_deteccion (not limite_cuantificacion)
-    mask_ld = campaigns["valor_original"] == "<LD"
-    campaigns.loc[mask_ld, "organized_value"] = campaigns.loc[
-        mask_ld, "limite_deteccion"
-    ]
-
-    # <LC → substitute with limite_cuantificacion
-    mask_lc = campaigns["valor_original"] == "<LC"
-    campaigns.loc[mask_lc, "organized_value"] = campaigns.loc[
-        mask_lc, "limite_cuantificacion"
-    ]
-
-    # LD<X<LC → substitute with limite_cuantificacion
-    mask_between = (
-        campaigns["valor_original"]
-        .str.upper()
-        .str.contains(r"LD\s*<\s*X\s*<\s*LC", na=False, regex=True)
+    campaigns["organized_value"] = campaigns.apply(
+        lambda row: clean_value(
+            row["valor_original"],
+            limite_deteccion=row.get("limite_deteccion"),
+            limite_cuantificacion=row.get("limite_cuantificacion"),
+        ),
+        axis=1,
     )
-    campaigns.loc[mask_between, "organized_value"] = campaigns.loc[
-        mask_between, "limite_cuantificacion"
-    ]
-
-    # <X and >X (numeric) are handled by clean_value below (strips < and >)
-
-    campaigns["organized_value"] = campaigns["organized_value"].apply(clean_value)
     return campaigns
 
 
@@ -179,10 +252,59 @@ def merge_stations_campaigns(
         campaigns,
         stations,
         how="left",
-        left_on=["codigo_pto", "id_estacion"],
-        right_on=["codigo_pto", "id_estacion"],
+        left_on=["id_estacion", "id_estacion"],
+        right_on=["id_estacion", "id_estacion"],
     )
     return merged_df
+
+
+def get_s2_tile(lat, lon):
+    mgrs_code = m.toMGRS(lat, lon)
+
+    # Sentinel-2 tile
+    return mgrs_code[:5]
+
+
+def remove_duplicate_records(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Remove registros duplicados baseando-se no par (date, sentinel2_scene).
+
+    A primeira ocorrência de cada par é mantida; as demais são consideradas
+    duplicatas e removidas.  O conjunto de duplicatas pode ser salvo em
+    CSV para auditoria.
+
+    Parameters
+    ----------
+    df:
+        DataFrame contendo ao menos as colunas ``date`` e
+        ``sentinel2_scene``.
+    duplicates_output:
+        Caminho opcional para salvar o CSV com os registros removidos.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        (df_clean, df_duplicates) — DataFrame sem duplicatas e DataFrame
+        com os registros removidos.
+    """
+    required = {"date", "s2_tile"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"Colunas necessárias para remoção de duplicatas ausentes: {missing}"
+        )
+
+    duplicated_mask = df.duplicated(subset=["date", "s2_tile"], keep="first")
+    df_clean = df[~duplicated_mask].reset_index(drop=True)
+
+    logger.info(
+        f"Remoção de duplicatas: {len(df_clean)} registros mantidos, "
+        f"(critério: date + s2_tile)."
+    )
+
+    return df_clean
 
 
 if __name__ == "__main__":
@@ -193,7 +315,16 @@ if __name__ == "__main__":
         "--mode",
         choices=["realtime", "campaigns"],
         required=True,
-        help="What king of data: OAN real time or field campaigns",
+        help="What kind of data: OAN real time or field campaigns",
+    )
+    parser.add_argument(
+        "--skip-clean",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the clean_campaigns step. Use this flag when the data "
+            "has already been cleaned by OAN before export."
+        ),
     )
     FINAL_PATH = Path("./data/monitoring_data/Automatic_WQ_monitoring_stations.csv")
     args = parser.parse_args()
@@ -209,17 +340,49 @@ if __name__ == "__main__":
 
         logger.info("Iniciando script de organização de dados...")
         build_final_csv(INPUT_DIR, FINAL_PATH, stations_coords)
+
     elif args.mode == "campaigns":
-        STATIONS_PATH = Path("./data/estaciones-seleccionadas.xlsx")
-        CAMPAIGNS_PATH = Path("./data/extraccion_20250930-181325.xlsx")
+        STATIONS_PATH = Path("./data/original_data/estaciones-seleccionadas.xlsx")
+        CAMPAIGNS_PATH = Path(
+            "./data/original_data/extraccion_20260527-203952_simple.xlsx"
+        )
         OUTPUT_CAMPAIGNS_PATH = Path("./data/monitoring_data/campaigns_organized.csv")
+        UNIQUE_DATA_PATH = Path("./data/monitoring_data/campaigns_unique_data.csv")
 
         stations_df = read_stations(STATIONS_PATH)
         campaigns_df = read_campaigns(CAMPAIGNS_PATH)
+
         if stations_df.empty or campaigns_df.empty:
             logger.error("Erro ao ler os arquivos de estações ou campanhas.")
         else:
-            campaigns_df = clean_campaigns(campaigns_df)
-            merged_df = merge_stations_campaigns(campaigns_df, stations_df)
+            if not args.skip_clean:
+                logger.info("Executando limpeza de campanhas (clean_campaigns)...")
+                campaigns_df = clean_campaigns(campaigns_df)
+            else:
+                logger.info("Limpeza de campanhas ignorada (--skip-clean ativo). ")
+                if (
+                    "fecha_muestra" in campaigns_df.columns
+                    and "date" not in campaigns_df.columns
+                ):
+                    logger.info("Renomeando 'fecha_muestra' para 'date'...")
+                    campaigns_df["fecha_muestra"] = pd.to_datetime(
+                        campaigns_df["fecha_muestra"], errors="coerce"
+                    )
+                    campaigns_df = campaigns_df.rename(
+                        columns={"fecha_muestra": "date"}
+                    )
+
+            merged_df = merge_stations_campaigns(stations_df, campaigns_df)
+
+            df_clean = remove_duplicate_records(merged_df)
+            if UNIQUE_DATA_PATH is not None and len(df_clean) > 0:
+
+                df_clean = pd.DataFrame(
+                    df_clean, columns=["date", "latitud", "longitud", "s2_tile"]
+                )
+                UNIQUE_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+                df_clean.to_csv(UNIQUE_DATA_PATH, index=False, sep=";")
+                logger.info(f"Registros unicos calvos em {UNIQUE_DATA_PATH}")
+            merged_df = merged_df.drop(columns="observaciones")
             merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False, sep=";")
             logger.info(f"Campanhas organizadas salvas em {OUTPUT_CAMPAIGNS_PATH}")

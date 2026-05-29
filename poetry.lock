@@ -533,6 +533,18 @@ files = [
 python-dotenv = "*"
 
 [[package]]
+name = "et-xmlfile"
+version = "2.0.0"
+description = "An implementation of lxml.xmlfile for the standard library"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "et_xmlfile-2.0.0-py3-none-any.whl", hash = "sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa"},
+    {file = "et_xmlfile-2.0.0.tar.gz", hash = "sha256:dab3f4764309081ce75662649be815c4c9081e88f0837825f90fd28317d4da54"},
+]
+
+[[package]]
 name = "fonttools"
 version = "4.63.0"
 description = "Tools to manipulate font files"
@@ -1027,6 +1039,80 @@ python-dateutil = ">=2.7"
 dev = ["meson-python (>=0.13.1,<0.17.0)", "pybind11 (>=2.13.2,!=2.13.3)", "setuptools (>=64)", "setuptools_scm (>=7,<10)"]
 
 [[package]]
+name = "mgrs"
+version = "1.5.4"
+description = "MGRS coordinate conversion for Python"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "mgrs-1.5.4-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:3f891afd1cff7a07789f6f939f36d4c00e0cbb66f824a3e3e253e93052f62770"},
+    {file = "mgrs-1.5.4-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:1d0463c68b7394855028ee336b2062b26ead03463dc170b28c7c0776254dbbc2"},
+    {file = "mgrs-1.5.4-cp310-cp310-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5626f204abcdee5ac3b93c2841251c06e2a04e1e3294c26d59cd9d272188decf"},
+    {file = "mgrs-1.5.4-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:af71f36a26efb6622ecbd32ae6bc4b56dc76aa90dc02218f7178314a4b1c49ed"},
+    {file = "mgrs-1.5.4-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:3122ae45380f8ef315f4cf91fbb7b668913194e9899bd89df5cc7c30669ca3eb"},
+    {file = "mgrs-1.5.4-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:28d16ef86aba649fce679a519edc6d55bb116104faee27b46bc5d255c9e1493b"},
+    {file = "mgrs-1.5.4-cp310-cp310-win32.whl", hash = "sha256:2a4dd38bb17f4a469fcaa911c645f9bca53099d799b578a184ac91f6464f59a9"},
+    {file = "mgrs-1.5.4-cp310-cp310-win_amd64.whl", hash = "sha256:7dda508a9c19fb28668de28f80f9c5e9031501dcee7e3344ba267847e352c31b"},
+    {file = "mgrs-1.5.4-cp310-cp310-win_arm64.whl", hash = "sha256:5459b238892a2eff3b62438e24d03eff65e59cdafe3b84e7858cd59633c1f13a"},
+    {file = "mgrs-1.5.4-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:7663f1bfd845715d9a6cb943050d949a6eb3dbef003a1dff7e7b2e3df3196459"},
+    {file = "mgrs-1.5.4-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:aaf9aae1cf2d61d3f10874f82f9dc45b0b0408cbb97d77284724038fc118499b"},
+    {file = "mgrs-1.5.4-cp311-cp311-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b770c4dae4eba1de633f25e2c90c164ce7b72ba9f19d585c087bd57201e904e6"},
+    {file = "mgrs-1.5.4-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0fe4810e4eb9a907eb60ea70320823577760651ebb5595b39ba06f27a2ec636b"},
+    {file = "mgrs-1.5.4-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:c6b88ff93308f6e5c4543ede2aa9eb570ecae2d2ef6d6215bbe545b24223c85e"},
+    {file = "mgrs-1.5.4-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:4f253b5174e38df771b58fadc5b7eec512de06db102705262ec3157c7eeb3ca4"},
+    {file = "mgrs-1.5.4-cp311-cp311-win32.whl", hash = "sha256:5573ed7dc29c3d947f43aa25dc3026b61f9df9292877bcd31b9b5633ba343593"},
+    {file = "mgrs-1.5.4-cp311-cp311-win_amd64.whl", hash = "sha256:71de610e84f2d998c5216e414d4cc14722eafa177968d9bc72be00d9d87f188f"},
+    {file = "mgrs-1.5.4-cp311-cp311-win_arm64.whl", hash = "sha256:38f7f015805aa0c77f1bfdfdf98583d048bc4d12c71d5cea586dd6f38b641b61"},
+    {file = "mgrs-1.5.4-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:b5c335c5b51016b5cee09cf3def7e265da707dbd2ad17527409ea95e6981cacc"},
+    {file = "mgrs-1.5.4-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:ed818bfaeccfc1b2672fdbeb5c0921125d02e76792504deb37eff980aa0a5b6f"},
+    {file = "mgrs-1.5.4-cp312-cp312-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9b0d9882cf87bbd2ed3b31906fab87107e81f3b27aa78de204aed0c34c6059a4"},
+    {file = "mgrs-1.5.4-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:24bb114dabd453a7536dcdc2b041f0cab581355a2daf4cac1db1cbce6bf1d584"},
+    {file = "mgrs-1.5.4-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:0dde60f7490f452ef65453f011e6c44c9ddfdbbb95e6db68c677fdcb99b00b9f"},
+    {file = "mgrs-1.5.4-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:2326d1dbcb8d627c1dee9c8732a94f7927cdd815ab3ade2fc1a1848f89bb6d72"},
+    {file = "mgrs-1.5.4-cp312-cp312-win32.whl", hash = "sha256:6c1c2b482de09b4b0492a8e76c23ba0b7ed691341f805748ea643bd1363d912a"},
+    {file = "mgrs-1.5.4-cp312-cp312-win_amd64.whl", hash = "sha256:893ef8462bf68fde227427d51a0984bb24a498305e174850cd1e021d44110b12"},
+    {file = "mgrs-1.5.4-cp312-cp312-win_arm64.whl", hash = "sha256:60a58b83e7aed196e0ce4c5ff5a1db3a3bd0a1f9b06d9909928c6dccc8118094"},
+    {file = "mgrs-1.5.4-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:eae9ddda477073863d110349b810f96ecb7ba8d51941f94c8592fd42e3727f75"},
+    {file = "mgrs-1.5.4-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:ad46928534d7b8aa34810ec646a141033f7fb5c4082102776c3ea7687d286af8"},
+    {file = "mgrs-1.5.4-cp313-cp313-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b5f09ae768d5dd19d4431d476e35ea4f19563bec044970b338007f456bb4bee6"},
+    {file = "mgrs-1.5.4-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d8a879e8ea24a38ecf2772efb01d6d2dc470eaf09fcc112cde51919bf8674567"},
+    {file = "mgrs-1.5.4-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:8a037d7017f92085e657c54886c0eb58e2af26f99773fc949599fba49fa83128"},
+    {file = "mgrs-1.5.4-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:ceb021a9dc38d65d43737864630a62f25616ee83a134ec78983eb942782611ed"},
+    {file = "mgrs-1.5.4-cp313-cp313-win32.whl", hash = "sha256:5f33feefef844ecad512cfa93c7c9e09728cfeb142dcc0b0c289e3204e11b1df"},
+    {file = "mgrs-1.5.4-cp313-cp313-win_amd64.whl", hash = "sha256:716b19c16ed13a25bfd2b326308d97a704d516b33499558119ae04a76b35813b"},
+    {file = "mgrs-1.5.4-cp313-cp313-win_arm64.whl", hash = "sha256:0c9706bc655797f80ef4d258d636341403f49b4477372694e37bd7b750cb3a0c"},
+    {file = "mgrs-1.5.4-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:b9ef2900a8aff032dfff24b6304ef81396fca844c826ce81cb4aa2ff704e9b79"},
+    {file = "mgrs-1.5.4-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:b7120dc4a509a5bd8f7f8ecbf18f11906e5c9129ec8829d92f21976723e24687"},
+    {file = "mgrs-1.5.4-cp314-cp314-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a2d18a7ea60746eb8f4e58be42ad297410a09183cc2bb004d3de2cf03e6f59bd"},
+    {file = "mgrs-1.5.4-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a5746ca68f426e4d25846a8ba04163ef013723f9dcf1920e92614a3e08897abf"},
+    {file = "mgrs-1.5.4-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:0d33c83bb321ad45640bede860b13fc4df52dd32f04ba011800aedf48a239c25"},
+    {file = "mgrs-1.5.4-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:3376bcd1a7fd3b417b3669b97bc69cf92fd6fbe868574e122348bfe2c310279e"},
+    {file = "mgrs-1.5.4-cp314-cp314-win32.whl", hash = "sha256:48b9b9a3fd699a2bf75cd022e5ca378c6c491ed3310763f0fe544a9b04b3118a"},
+    {file = "mgrs-1.5.4-cp314-cp314-win_amd64.whl", hash = "sha256:e14de6e25c0cdfa25c8e4fa50c3ebbc3c928ac9662af4c06a310ec2c9727b486"},
+    {file = "mgrs-1.5.4-cp314-cp314-win_arm64.whl", hash = "sha256:88a9ef905558b9b8793596cb3c0ad56ba36143031800ab7733e790ebe311e417"},
+    {file = "mgrs-1.5.4-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:93be5b139f921aaf2c2f37913a5de1c12b3b3f3a36c9d8f2afb90d3f51f48655"},
+    {file = "mgrs-1.5.4-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:ac5230e4cac3413463bed15ed658ca8de9920bab6980887575021ed8650140c3"},
+    {file = "mgrs-1.5.4-cp314-cp314t-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e7becdd5fc87a2f1b091a8c7950ecff5b5da09cd417c27ed176b56438a53a840"},
+    {file = "mgrs-1.5.4-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:bb65a8b3a20d70d1f8b3b414d9899a379554dff69bfc0de7893fba4b779d6386"},
+    {file = "mgrs-1.5.4-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:076ff2a607d21f72d38480b2e90aa6729463f6f259a689349faf9065ceffa9a8"},
+    {file = "mgrs-1.5.4-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:d3c4481277f707223b6b70966c8ce75d2d17584cfc6c78572cc637c0f79fd984"},
+    {file = "mgrs-1.5.4-cp314-cp314t-win32.whl", hash = "sha256:5264e13eb64bfc4673fb02605f14b7489c19f7add7c66bd4360f70dec0bdff17"},
+    {file = "mgrs-1.5.4-cp314-cp314t-win_amd64.whl", hash = "sha256:ef4509eef16174506909ed5d38ae699ad19e79048136ad38299ab81ce7a9caf5"},
+    {file = "mgrs-1.5.4-cp314-cp314t-win_arm64.whl", hash = "sha256:2c24ea9e62d2c4568bb53cb15c09f2e64baa508069ddbe9431ac5e3f56a6f6d9"},
+    {file = "mgrs-1.5.4-cp39-cp39-macosx_10_9_x86_64.whl", hash = "sha256:10e3657d3625a26ac54c798b47430a124dcab1bf0628655ae9de3e90e9fc2e48"},
+    {file = "mgrs-1.5.4-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:69a62b56705dbf5383678f409bbd9a0f12cd9003904b4c05b478656511164849"},
+    {file = "mgrs-1.5.4-cp39-cp39-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7da09cc32ac84cec924bdfcc89687588d0ba01e8a7cd8d02d0b7ff55c1206da2"},
+    {file = "mgrs-1.5.4-cp39-cp39-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5379d5b3864c1da201afea138d230bf809268429dbd4a473df87755f1b949c72"},
+    {file = "mgrs-1.5.4-cp39-cp39-musllinux_1_2_aarch64.whl", hash = "sha256:ae335243cc86dd941085be1de5e93942e362a949dc1a66693fccca82176fb0fb"},
+    {file = "mgrs-1.5.4-cp39-cp39-musllinux_1_2_x86_64.whl", hash = "sha256:1da8f3b64aeac8c4bc6b93485188d665754484c9c7fc062d720b8ba2e938eb3e"},
+    {file = "mgrs-1.5.4-cp39-cp39-win32.whl", hash = "sha256:513d99d7c03a4a91a620b5206f6708df406fd08d1ab8f068183acda993a23c28"},
+    {file = "mgrs-1.5.4-cp39-cp39-win_amd64.whl", hash = "sha256:babcea3b260ac047face9fc99992c2ca1a682c15e04ea2ac6e30ac9aee8dc75d"},
+    {file = "mgrs-1.5.4-cp39-cp39-win_arm64.whl", hash = "sha256:c3f7162b55d4dd58fbe38b315592dc6a527ff5d311c7000416bfbce09cea0380"},
+    {file = "mgrs-1.5.4.tar.gz", hash = "sha256:41ba8f5bfbf8d15fb5d34d275cd8201fc9917ebb10fb82913831e95a31930ffa"},
+]
+
+[[package]]
 name = "mypy-extensions"
 version = "1.1.0"
 description = "Type system extensions for programs checked with the mypy type checker."
@@ -1227,6 +1313,21 @@ files = [
 rsa = ["cryptography (>=3.0.0)"]
 signals = ["blinker (>=1.4.0)"]
 signedtoken = ["cryptography (>=3.0.0)", "pyjwt (>=2.0.0,<3)"]
+
+[[package]]
+name = "openpyxl"
+version = "3.1.5"
+description = "A Python library to read/write Excel 2010 xlsx/xlsm files"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "openpyxl-3.1.5-py2.py3-none-any.whl", hash = "sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2"},
+    {file = "openpyxl-3.1.5.tar.gz", hash = "sha256:cf0e3cf56142039133628b5acffe8ef0c12bc902d2aadd3e0fe5878dc08d1050"},
+]
+
+[package.dependencies]
+et-xmlfile = "*"
 
 [[package]]
 name = "packaging"
@@ -2498,4 +2599,4 @@ remote = ["fsspec (>=2023.10.0)", "obstore (>=0.5.1)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "b672cd612ca1b1118293f3b95eca33569b57cbdebb644f5afd7fddc9d94f8af1"
+content-hash = "cd9d114585a374cba51e888b894e3732b3448ff6d36dbc50082ff293ec9a7aba"
