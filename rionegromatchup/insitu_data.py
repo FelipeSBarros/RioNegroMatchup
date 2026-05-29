@@ -252,8 +252,7 @@ def merge_stations_campaigns(
         campaigns,
         stations,
         how="left",
-        left_on=["id_estacion", "id_estacion"],
-        right_on=["id_estacion", "id_estacion"],
+        on="id_estacion",
     )
     return merged_df
 
@@ -381,8 +380,8 @@ if __name__ == "__main__":
                     df_clean, columns=["date", "latitud", "longitud", "s2_tile"]
                 )
                 UNIQUE_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-                df_clean.to_csv(UNIQUE_DATA_PATH, index=False, sep=";")
+                df_clean.to_csv(UNIQUE_DATA_PATH, index=False)
                 logger.info(f"Registros unicos calvos em {UNIQUE_DATA_PATH}")
             merged_df = merged_df.drop(columns="observaciones")
-            merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False, sep=";")
+            merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False)
             logger.info(f"Campanhas organizadas salvas em {OUTPUT_CAMPAIGNS_PATH}")

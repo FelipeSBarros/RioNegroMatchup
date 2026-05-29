@@ -75,6 +75,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+from dataclasses import replace
 
 logger = logging.getLogger(__name__)
 
@@ -1232,63 +1233,64 @@ class AcoliteConfig:
             image_output = base_output / stem
             image_output.mkdir(parents=True, exist_ok=True)
 
-            # Override IO for this image
-            self.io.inputfile = str(safe_path)
-            self.io.output = str(image_output)
+            original_io = self.io
+            self.io = replace(self.io, inputfile=str(safe_path), output=str(image_output))
 
-            # Validate IO for this specific image
             try:
-                self.io.validate()
-            except (FileNotFoundError, ValueError) as e:
-                logger.error(f"  Validation failed for {stem}: {e}")
-                results.append({
-                    "returncode": -1,
-                    "log_file":   None,
-                    "l2w_file":   None,
-                    "stdout":     "",
-                    "stderr":     str(e),
-                    "inputfile":  str(safe_path),
-                    "output_dir": image_output,
-                    "skipped":    False,
-                })
-                if not continue_on_error:
-                    raise
-                continue
+                # Validate IO for this specific image
+                try:
+                    self.io.validate()
+                except (FileNotFoundError, ValueError) as e:
+                    logger.error(f"  Validation failed for {stem}: {e}")
+                    results.append({
+                        "returncode": -1,
+                        "log_file": None,
+                        "l2w_file": None,
+                        "stdout": "",
+                        "stderr": str(e),
+                        "inputfile": str(safe_path),
+                        "output_dir": image_output,
+                        "skipped": False,
+                    })
+                    if not continue_on_error:
+                        raise
+                    continue
 
-            # Write per-image settings file
-            settings_path = self.to_settings_file(
-                image_output / "acolite_settings.txt"
-            )
+                # Write per-image settings file
+                settings_path = self.to_settings_file(
+                    image_output / "acolite_settings.txt")
 
-            if dry_run:
-                cmd = [
-                    str(Path(self.acolite_executable).expanduser().resolve()),
-                    "--cli",
-                    f"--settings={settings_path}",
-                ]
-                logger.info(f"  [dry_run] Command: {' '.join(cmd)}")
-                results.append({
-                    "returncode": None,
-                    "log_file":   None,
-                    "l2w_file":   None,
-                    "stdout":     "",
-                    "stderr":     "",
-                    "inputfile":  str(safe_path),
-                    "output_dir": image_output,
-                    "skipped":    False,
-                })
-                continue
+                if dry_run:
+                    cmd = [
+                        str(Path(self.acolite_executable).expanduser().resolve()),
+                        "--cli",
+                        f"--settings={settings_path}",
+                    ]
+                    logger.info(f"  [dry_run] Command: {' '.join(cmd)}")
+                    results.append({
+                        "returncode": None,
+                        "log_file":   None,
+                        "l2w_file":   None,
+                        "stdout":     "",
+                        "stderr":     "",
+                        "inputfile":  str(safe_path),
+                        "output_dir": image_output,
+                        "skipped":    False,
+                    })
+                    continue
 
-            result = self._execute(settings_path)
-            result["skipped"] = False
-            results.append(result)
+                result = self._execute(settings_path)
+                result["skipped"] = False
+                results.append(result)
 
-            if result["returncode"] != 0 and not continue_on_error:
-                raise RuntimeError(
-                    f"ACOLITE failed for {stem} "
-                    f"(returncode={result['returncode']}). "
-                    f"stderr: {result['stderr']}"
-                )
+                if result["returncode"] != 0 and not continue_on_error:
+                    raise RuntimeError(
+                        f"ACOLITE failed for {stem} "
+                        f"(returncode={result['returncode']}). "
+                        f"stderr: {result['stderr']}"
+                    )
+            finally:
+                self.io = original_io
 
         # Summary log
         processed = [r for r in results if not r.get("skipped")]
