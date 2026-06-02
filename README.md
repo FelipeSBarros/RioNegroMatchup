@@ -413,3 +413,22 @@ result = cfg.run()
 | # | Area | Issue                                                                         | Priority | Status |
 |---|------|-------------------------------------------------------------------------------|----------|--------|
 | 9 | Validation | No satellite vs. field measurement comparison implemented                     | Medium | ⏳ Pending |
+
+**scl_water** baby-steps:  
+
+| Step | What | Where |  |  |  |  |
+|:---:|:---:|:---:|---|---|---|---|
+| 0 | Reorganise SCL download path (your task note from Q7) | sentinel_data.py |  |  |  |  |
+| 1 | scl_water_to_geojson() — extraction function | new scl_water.py |  |  |  |  |
+| 2 | Unit tests for Step 1 | tests/ |  |  |  |  |
+| 3 | build_water_polygon_datacube() + resolve_scl_path() | scl_water.py |  |  |  |  |
+| 4 | Unit tests for Step 3 | tests/ |  |  |  |  |
+| 5 | polygon_clip field + validation in IOConfig | acolite_spec.py |  |  |  |  |
+| 6 | with_scl_polygon() method on AcoliteConfig | acolite_spec.py |  |  |  |  |
+| 7 | Unit tests for Steps 5 & 6 | tests/ |  |  |  |  |
+| 8 | run_batch() extension (use_scl, scl_dir, scl_kwargs) | acolite_spec.py |  |  |  |  |
+| 9 | Unit tests for Step 8 | tests/ |  |  |  |  |
+|  |  |  |  |  |  |  |
+|  |  |  |  |  |  |  |
+|  |  |  |  |  |  |  |
+|  |  |  |  |  |  |  |

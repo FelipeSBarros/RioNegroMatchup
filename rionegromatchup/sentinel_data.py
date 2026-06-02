@@ -38,6 +38,9 @@ s3 = boto3.resource(
     region_name="default",
 )
 
+# Subdirectory name used for all SCL GeoTIFF files under the download root.
+SCL_SUBDIR = "scl"
+
 
 def create_bbox_from_point(lon: float, lat: float, buffer_degrees=0.01):
     """Cria um BBox com buffer em torno de um ponto (lon, lat)."""
@@ -64,7 +67,6 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
 
     logger.info(f"Buscando imagens entre {start} e {end} (cloud < {cloud_cover}%)")
 
-    # Point 3 fix: convert to list once, with a clear variable name
     l1c_results = list(
         catalog.search(
             DataCollection.SENTINEL2_L1C,
@@ -82,12 +84,8 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
     for item in l1c_results:
         item_id = item["id"]
 
-        # Point 4 fix: extract the acquisition date from this specific L1C item
-        # and use a narrow ±0 day window to find its L2A counterpart
-        acquisition_datetime = item["properties"][
-            "datetime"
-        ]  # e.g. "2025-08-01T10:10:31Z"
-        acquisition_date = acquisition_datetime[:10]  # e.g. "2025-08-01"
+        acquisition_datetime = item["properties"]["datetime"]
+        acquisition_date = acquisition_datetime[:10]
 
         logger.info(
             f"  Buscando L2A correspondente para {item_id} ({acquisition_date})"
@@ -122,7 +120,7 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
                 "cloud_cover": item["properties"]["eo:cloud_cover"],
                 "href": item["assets"]["data"]["href"],
                 "delta_days": delta_days,
-                "l2a_cls": scl_href,  # may be None if no L2A match found
+                "l2a_cls": scl_href,
             }
         )
 
@@ -137,9 +135,7 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
     if "longitud" not in df.columns or "latitud" not in df.columns:
         raise ValueError("longitud or latitud columns not found in CSV")
 
-    unique_dates_places = df[["date", "longitud", "latitud"]].drop_duplicates() # TODO not necessary as the duplication is being removed in insitu_data.py
-
-    # Accumulate all images grouped by date, deduplicating by scene ID
+    unique_dates_places = df[["date", "longitud", "latitud"]].drop_duplicates()
 
     scenes_by_date: dict[str, dict] = defaultdict(dict)
 
@@ -160,7 +156,6 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
             else:
                 logger.info(f"  Cena duplicada ignorada: {scene_id}")
 
-    # Build final catalog list
     catalog_data = [
         {
             "field_date": date,
@@ -186,7 +181,6 @@ def download_product(bucket, product: str, output_dir: Path):
         product: S3 prefix path to the product
         output_dir: local directory to save downloaded files
     """
-    # Point 6 fix: materialize once to avoid exhausting the iterator on the existence check
     files = list(bucket.objects.filter(Prefix=product))
 
     if not files:
@@ -203,7 +197,6 @@ def download_product(bucket, product: str, output_dir: Path):
         os.makedirs(local_file.parent, exist_ok=True)
 
         try:
-            # Point 6 fix: correct boto3 API — download via the Object resource
             bucket.Object(obj.key).download_file(str(local_file))
             logger.info(f"Baixado: {local_file}")
         except Exception as e:
@@ -211,30 +204,70 @@ def download_product(bucket, product: str, output_dir: Path):
             raise
 
 
-def download_scl_asset(output_dir: Path, id: str, scl_asset_href: str):
-    """Baixa o asset SCL de uma cena Sentinel-2 L2A"""
+def download_scl_asset(output_dir: Path, id: str, scl_asset_href: str) -> Path:
+    """
+    Baixa o asset SCL de uma cena Sentinel-2 L2A.
+
+    SCL files are saved under ``{output_dir}/scl/`` to keep them
+    separate from the SAFE product folders.
+
+    Args:
+        output_dir: root download directory (same root used for SAFE products)
+        id: product core identifier (without .SAFE), used as the filename stem
+        scl_asset_href: URL of the SCL GeoTIFF asset
+
+    Returns:
+        Path to the downloaded SCL file.
+    """
+    scl_dir = Path(output_dir) / SCL_SUBDIR
+    scl_dir.mkdir(parents=True, exist_ok=True)
+
+    scl_path = scl_dir / f"{id}_SCL.tif"
+
     resp = requests.get(scl_asset_href, stream=True)
     resp.raise_for_status()
-    with open(f"{output_dir}/{id}_SCL.tif", "wb") as f:
+    with open(scl_path, "wb") as f:
         for chunk in resp.iter_content(chunk_size=8192):
             f.write(chunk)
-    logger.info(f"Asset SCL salvo")
-    return None
+
+    logger.info(f"Asset SCL salvo em {scl_path}")
+    return scl_path
+
+
+def get_scl_path(product_id: str, output_dir: Path) -> Path:
+    """
+    Returns the expected local path for an SCL file given a product ID
+    and the root download directory.
+
+    This is the single source of truth for SCL path resolution —
+    used by both get_download_status() and resolve_scl_path().
+
+    Args:
+        product_id: product identifier (with or without .SAFE extension)
+        output_dir: root download directory
+
+    Returns:
+        Expected Path to the SCL GeoTIFF (may or may not exist yet).
+    """
+    product_core_id = product_id.split(".")[0]
+    return Path(output_dir) / SCL_SUBDIR / f"{product_core_id}_SCL.tif"
 
 
 def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -> dict:
     """
-    Retorna o status de download para SAFE e SCL (se aplicável)
+    Retorna o status de download para SAFE e SCL (se aplicável).
+
+    SCL files are expected under ``{output_dir}/scl/`` (see SCL_SUBDIR).
 
     Returns:
         dict: {
             'safe_exists': bool,
-            'scl_exists': bool (ou None se download_scl=False),
-            'all_downloaded': bool  # True se tudo que precisa já foi baixado
+            'scl_exists': bool (or None if download_scl=False),
+            'all_downloaded': bool  # True if everything needed is already present
         }
     """
     # Verifica SAFE
-    safe_folder = Path(output_dir, product_id)
+    safe_folder = Path(output_dir) / product_id
     safe_file = Path(output_dir) / f"{product_id}.SAFE"
     safe_exists = (
         safe_folder.exists() and safe_folder.is_dir() and any(safe_folder.iterdir())
@@ -243,11 +276,9 @@ def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -
     # Verifica SCL apenas se necessário
     scl_exists = None
     if download_scl:
-        product_core_id = product_id.split(".")[0]
-        scl_path = Path(output_dir) / f"{product_core_id}_SCL.tif"
+        scl_path = get_scl_path(product_id, output_dir)
         scl_exists = scl_path.exists()
 
-    # Determina se tudo que precisamos já foi baixado
     if download_scl:
         all_downloaded = safe_exists and scl_exists
     else:
@@ -290,17 +321,14 @@ def run_download(
             product_path = "/".join(img["href"].split("/")[3:])
             product_core_id = product_id.split(".")[0]
 
-            # Verifica status atual
             status = get_download_status(product_id, output_dir, download_scl)
 
-            # Se tudo já foi baixado, pula
             if status["all_downloaded"]:
                 logger.info(f"[{field_date}] {product_id} - tudo já baixado, pulando")
                 stats["already_downloaded"] += 1
                 continue
 
             try:
-                # Baixa o produto SAFE se necessário
                 if not status["safe_exists"]:
                     logger.info(f"[{field_date}] Baixando {product_id}...")
                     download_product(s3.Bucket("eodata"), product_path, output_dir)
@@ -309,14 +337,17 @@ def run_download(
                 else:
                     logger.info(f"✓ SAFE já existe: {product_id}")
 
-                # Baixa o asset SCL se necessário
                 if download_scl and not status["scl_exists"]:
-                    logger.info(f"  Baixando SCL...")
-                    download_scl_asset(output_dir, product_core_id, img["l2a_cls"])
+                    logger.info(f"  Baixando SCL para {product_core_id}...")
+                    scl_path = download_scl_asset(
+                        output_dir, product_core_id, img["l2a_cls"]
+                    )
                     stats["scl_downloaded"] += 1
-                    logger.info(f"  ✓ SCL baixado")
+                    logger.info(f"  ✓ SCL baixado: {scl_path}")
                 elif download_scl and status["scl_exists"]:
-                    logger.info(f"  ✓ SCL já existia")
+                    logger.info(
+                        f"  ✓ SCL já existia: {get_scl_path(product_id, output_dir)}"
+                    )
                 elif not download_scl:
                     stats["skipped_no_need"] += 1
                     logger.info(f"  ℹ SCL não solicitado para download")
@@ -325,7 +356,6 @@ def run_download(
                 logger.error(f"✗ Erro ao baixar {product_id}: {e}")
                 stats["errors"] += 1
 
-    # Relatório final
     logger.info("\n" + "=" * 50)
     logger.info("RELATÓRIO DE DOWNLOAD")
     logger.info("=" * 50)
@@ -353,9 +383,12 @@ if __name__ == "__main__":
         default=True,
         help="Baixar asset SCL junto com produtos SAFE",
     )
-    parser.add_argument("--csv", type=Path,
-                        default=Path("./data/monitoring_data/campaigns_unique_data.csv"),
-                        help="CSV com datas de campo")
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        default=Path("./data/monitoring_data/campaigns_unique_data.csv"),
+        help="CSV com datas de campo",
+    )
     parser.add_argument(
         "--output",
         type=Path,
