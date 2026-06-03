@@ -660,3 +660,84 @@ class AcoliteConfig:
         settings = self.to_settings_dict()
         lines = "\n".join(f"  {k} = {v}" for k, v in settings.items())
         return f"AcoliteConfig(\n{lines}\n)"
+
+
+# Monkey-patch with_scl_polygon onto AcoliteConfig
+# (defined outside the class body to keep the heredoc clean,
+#  then assigned as a method below)
+
+
+def _with_scl_polygon(
+    self,
+    scl_path,
+    geojson_output_dir=None,
+    overwrite=False,
+    **scl_kwargs,
+):
+    """
+    Extract water polygons from an SCL file and return a new
+    ``AcoliteConfig`` with ``polygon`` and ``polygon_clip`` wired up.
+
+    Calls ``scl_water_to_geojson()`` internally to produce the GeoJSON,
+    then returns a copy of this config (via ``dataclasses.replace``) with:
+
+    - ``io.polygon``      → path to the generated GeoJSON
+    - ``io.polygon_clip`` → ``True``
+    - ``io.limit``        → ``None``  (mutually exclusive with polygon)
+
+    The original config is never mutated — safe to call in a loop.
+
+    Parameters
+    ----------
+    scl_path:
+        Path to the SCL GeoTIFF asset for this scene.
+    geojson_output_dir:
+        Directory where the GeoJSON file will be written.
+        Defaults to ``{io.output}/geojson/``.
+    overwrite:
+        Passed through to ``scl_water_to_geojson``.  If ``False``
+        (default) and the GeoJSON already exists, it is reused.
+    **scl_kwargs:
+        Extra keyword arguments forwarded to ``scl_water_to_geojson``
+        (e.g. ``min_area_m2``, ``buffer_m``, ``simplify_tolerance``).
+
+    Returns
+    -------
+    AcoliteConfig
+        New config instance with polygon clipping configured.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``scl_path`` does not exist.
+    ValueError
+        If no water pixels are found in the SCL raster.
+    """
+    from rionegromatchup.scl_water import scl_water_to_geojson, GEOJSON_SUBDIR
+
+    scl_path = Path(scl_path)
+
+    # Derive GeoJSON output directory
+    if geojson_output_dir is None:
+        geojson_output_dir = Path(self.io.output) / GEOJSON_SUBDIR
+    else:
+        geojson_output_dir = Path(geojson_output_dir)
+
+    scene_id = scl_path.stem
+    geojson_path = geojson_output_dir / f"{scene_id}_water.geojson"
+
+    logger.info(f"with_scl_polygon: extracting water mask from {scl_path.name}")
+    scl_water_to_geojson(
+        scl_path=scl_path,
+        output_path=geojson_path,
+        overwrite=overwrite,
+        **scl_kwargs,
+    )
+    logger.info(f"with_scl_polygon: polygon set to {geojson_path}")
+
+    # Return a new config with polygon wired up; clear limit (mutually exclusive)
+    new_io = replace(self.io, polygon=str(geojson_path), polygon_clip=True, limit=None)
+    return replace(self, io=new_io)
+
+
+AcoliteConfig.with_scl_polygon = _with_scl_polygon

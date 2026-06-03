@@ -21,7 +21,6 @@ from rionegromatchup.sentinel_data import (
     SCL_SUBDIR,
 )
 
-
 # ==============================================================================
 # sentinel_data.py tests
 # ==============================================================================
@@ -754,3 +753,302 @@ class TestIOConfigPolygonClip:
         )
         settings = cfg.to_settings_dict()
         assert "polygon_clip" not in settings
+
+
+"""
+Unit tests for acolite_spec.py — Step 5: polygon_clip field and validation.
+"""
+
+import pytest
+from rionegromatchup.acolite_spec import IOConfig
+
+
+class TestIOConfigPolygonClip:
+    """Tests for the polygon_clip field and its validation."""
+
+    # --- Default value ---
+
+    def test_polygon_clip_defaults_to_false(self):
+        io = IOConfig(inputfile="", output="")
+        assert io.polygon_clip is False
+
+    # --- Validation ---
+
+    def test_polygon_clip_true_with_polygon_passes(self, tmp_path):
+        polygon_file = tmp_path / "water.geojson"
+        polygon_file.write_text("{}")
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            polygon=str(polygon_file),
+            polygon_clip=True,
+        )
+        # Should not raise
+        io.validate()
+
+    def test_polygon_clip_true_without_polygon_raises(self, tmp_path):
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            polygon=None,
+            polygon_clip=True,
+        )
+        with pytest.raises(
+            ValueError, match="polygon_clip=True requires a valid polygon path"
+        ):
+            io.validate()
+
+    def test_polygon_clip_false_without_polygon_passes(self, tmp_path):
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            polygon=None,
+            polygon_clip=False,
+        )
+        # Should not raise
+        io.validate()
+
+    def test_polygon_clip_false_with_polygon_passes(self, tmp_path):
+        polygon_file = tmp_path / "water.geojson"
+        polygon_file.write_text("{}")
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            polygon=str(polygon_file),
+            polygon_clip=False,
+        )
+        # polygon_clip=False — no constraint on polygon
+        io.validate()
+
+    def test_limit_and_polygon_still_mutually_exclusive(self, tmp_path):
+        polygon_file = tmp_path / "water.geojson"
+        polygon_file.write_text("{}")
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            limit=(-33.0, -57.0, -32.5, -56.0),
+            polygon=str(polygon_file),
+        )
+        with pytest.raises(ValueError, match="either `limit` or `polygon`"):
+            io.validate()
+
+    # --- Serialisation ---
+
+    def test_polygon_clip_true_appears_in_settings_dict(self, tmp_path):
+        from rionegromatchup.acolite_spec import AcoliteConfig
+
+        polygon_file = tmp_path / "water.geojson"
+        polygon_file.write_text("{}")
+
+        cfg = AcoliteConfig(
+            acolite_executable="/fake/acolite",
+            io=IOConfig(
+                inputfile="",
+                output="",
+                polygon=str(polygon_file),
+                polygon_clip=True,
+            ),
+        )
+        settings = cfg.to_settings_dict()
+        assert settings.get("polygon_clip") == "true"
+        assert settings.get("polygon") == str(polygon_file)
+
+    def test_polygon_clip_false_absent_from_settings_dict(self):
+        from rionegromatchup.acolite_spec import AcoliteConfig
+
+        cfg = AcoliteConfig(
+            acolite_executable="/fake/acolite",
+            io=IOConfig(inputfile="", output="", polygon_clip=False),
+        )
+        settings = cfg.to_settings_dict()
+        assert "polygon_clip" not in settings
+
+
+# ---------------------------------------------------------------------------
+# with_scl_polygon — Step 6 tests
+# ---------------------------------------------------------------------------
+
+import numpy as np
+import rasterio
+from rasterio.transform import from_bounds
+from rionegromatchup.acolite_spec import AcoliteConfig
+from rionegromatchup.scl_water import SCL_WATER_CLASS, GEOJSON_SUBDIR
+
+# Reuse same synthetic raster helper pattern from test_scl_water.py
+_TEST_CRS = "EPSG:32721"
+_W, _S, _E, _N = 500_000.0, 6_350_000.0, 500_300.0, 6_350_300.0
+
+
+def _make_scl(tmp_path, name="S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD_SCL.tif"):
+    data = np.full((30, 30), 4, dtype=np.uint8)
+    data[5:25, 5:25] = SCL_WATER_CLASS
+    transform = from_bounds(_W, _S, _E, _N, 30, 30)
+    path = tmp_path / name
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=30,
+        width=30,
+        count=1,
+        dtype=np.uint8,
+        crs=_TEST_CRS,
+        transform=transform,
+    ) as dst:
+        dst.write(data, 1)
+    return path
+
+
+def _make_cfg(tmp_path):
+    return AcoliteConfig(
+        acolite_executable="/fake/acolite",
+        io=IOConfig(inputfile="", output=str(tmp_path)),
+    )
+
+
+class TestWithSclPolygon:
+    """Tests for AcoliteConfig.with_scl_polygon()."""
+
+    # --- Return type and immutability ---
+
+    def test_returns_acolite_config(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        result = cfg.with_scl_polygon(scl, min_area_m2=0)
+        assert isinstance(result, AcoliteConfig)
+
+    def test_returns_new_instance(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        result = cfg.with_scl_polygon(scl, min_area_m2=0)
+        assert result is not cfg
+
+    def test_original_config_not_mutated(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        cfg.with_scl_polygon(scl, min_area_m2=0)
+        assert cfg.io.polygon is None
+        assert cfg.io.polygon_clip is False
+
+    # --- polygon and polygon_clip wired correctly ---
+
+    def test_polygon_set_to_geojson_path(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        result = cfg.with_scl_polygon(scl, min_area_m2=0)
+        assert result.io.polygon is not None
+        assert result.io.polygon.endswith(".geojson")
+
+    def test_polygon_clip_is_true(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        result = cfg.with_scl_polygon(scl, min_area_m2=0)
+        assert result.io.polygon_clip is True
+
+    def test_limit_cleared(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = AcoliteConfig(
+            acolite_executable="/fake/acolite",
+            io=IOConfig(
+                inputfile="",
+                output=str(tmp_path),
+                limit=(-33.0, -57.0, -32.5, -56.0),
+            ),
+        )
+        result = cfg.with_scl_polygon(scl, min_area_m2=0)
+        assert result.io.limit is None
+
+    # --- GeoJSON file location ---
+
+    def test_geojson_written_to_default_subdir(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        result = cfg.with_scl_polygon(scl, min_area_m2=0)
+        expected_dir = tmp_path / GEOJSON_SUBDIR
+        assert Path(result.io.polygon).parent == expected_dir
+
+    def test_geojson_written_to_custom_dir(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        custom_dir = tmp_path / "custom_geojson"
+        result = cfg.with_scl_polygon(scl, geojson_output_dir=custom_dir, min_area_m2=0)
+        assert Path(result.io.polygon).parent == custom_dir
+
+    def test_geojson_file_exists_on_disk(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        result = cfg.with_scl_polygon(scl, min_area_m2=0)
+        assert Path(result.io.polygon).exists()
+
+    # --- Idempotency ---
+
+    def test_reuses_existing_geojson_when_overwrite_false(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        result1 = cfg.with_scl_polygon(scl, min_area_m2=0)
+        mtime = Path(result1.io.polygon).stat().st_mtime
+        result2 = cfg.with_scl_polygon(scl, overwrite=False, min_area_m2=0)
+        assert Path(result2.io.polygon).stat().st_mtime == mtime
+
+    # --- Validation passes after with_scl_polygon ---
+
+    def test_resulting_config_passes_io_validation(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        result = cfg.with_scl_polygon(scl, min_area_m2=0)
+        # Should not raise — polygon exists, polygon_clip=True, limit=None
+        result.io.validate()
+
+    # --- Serialisation ---
+
+    def test_polygon_clip_in_settings_dict(self, tmp_path):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        result = cfg.with_scl_polygon(scl, min_area_m2=0)
+        settings = result.to_settings_dict()
+        assert settings.get("polygon_clip") == "true"
+        assert "polygon" in settings
+
+    # --- Error propagation ---
+
+    def test_raises_if_scl_not_found(self, tmp_path):
+        cfg = _make_cfg(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            cfg.with_scl_polygon(tmp_path / "nonexistent.tif")
+
+    def test_raises_if_no_water_pixels(self, tmp_path):
+        # Raster with no water
+        data = np.full((30, 30), 4, dtype=np.uint8)
+        transform = from_bounds(_W, _S, _E, _N, 30, 30)
+        scl = tmp_path / "no_water_SCL.tif"
+        with rasterio.open(
+            scl,
+            "w",
+            driver="GTiff",
+            height=30,
+            width=30,
+            count=1,
+            dtype=np.uint8,
+            crs=_TEST_CRS,
+            transform=transform,
+        ) as dst:
+            dst.write(data, 1)
+
+        cfg = _make_cfg(tmp_path)
+        with pytest.raises(ValueError, match="No water pixels"):
+            cfg.with_scl_polygon(scl)
