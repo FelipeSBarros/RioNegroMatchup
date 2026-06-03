@@ -66,7 +66,9 @@ class IOConfig:
 
     def validate(self) -> None:
         if self.limit is not None and self.polygon is not None:
-            raise ValueError("Specify either `limit` or `polygon`, not both.")
+            raise ValueError(
+                "Specify either `limit` or `polygon`, not both."
+            )
         if self.polygon_clip and not self.polygon:
             raise ValueError(
                 "polygon_clip=True requires a valid polygon path. "
@@ -118,18 +120,16 @@ class GlintConfig:
 
 @dataclass
 class L2WConfig:
-    l2w_parameters: list[str] = field(
-        default_factory=lambda: [
-            "t_nechad",
-            "spm_nechad",
-            "chl_oc3",
-            "chl_re",
-            "aphy_443",
-            "fai",
-            "ndwi",
-            "ndvi",
-        ]
-    )
+    l2w_parameters: list[str] = field(default_factory=lambda: [
+        "t_nechad",
+        "spm_nechad",
+        "chl_oc3",
+        "chl_re",
+        "aphy_443",
+        "fai",
+        "ndwi",
+        "ndvi",
+    ])
     l2w_mask: bool = True
     l2w_mask_negative_rhos: bool = True
     l2w_mask_cirrus: bool = True
@@ -155,7 +155,6 @@ class OutputConfig:
 # Post-processing helpers (unchanged from original)
 # ---------------------------------------------------------------------------
 
-
 def _parse_date_from_l2w(l2w_nc: Path) -> "pd.Timestamp":
     import re
     import pandas as pd
@@ -169,7 +168,9 @@ def _parse_date_from_l2w(l2w_nc: Path) -> "pd.Timestamp":
         year, month, day = match.group(1), match.group(2), match.group(3)
         return pd.Timestamp(f"{year}-{month}-{day}")
 
-    raise ValueError(f"Could not parse acquisition date from filename '{l2w_nc.name}'.")
+    raise ValueError(
+        f"Could not parse acquisition date from filename '{l2w_nc.name}'."
+    )
 
 
 def append_l2w_to_datacube(
@@ -197,12 +198,8 @@ def append_l2w_to_datacube(
         raise FileNotFoundError(f"L2W NetCDF not found: {l2w_nc}")
 
     GRID_MAPPING_NAMES = {
-        "transverse_mercator",
-        "polar_stereographic",
-        "lambert_conformal_conic",
-        "spatial_ref",
-        "crs",
-        "grid_mapping",
+        "transverse_mercator", "polar_stereographic",
+        "lambert_conformal_conic", "spatial_ref", "crs", "grid_mapping",
     }
 
     date = _parse_date_from_l2w(l2w_nc)
@@ -210,7 +207,8 @@ def append_l2w_to_datacube(
 
     ds = xr.open_dataset(l2w_nc, decode_coords="all")
     data_vars = [
-        v for v in ds.data_vars if v not in GRID_MAPPING_NAMES and ds[v].ndim >= 2
+        v for v in ds.data_vars
+        if v not in GRID_MAPPING_NAMES and ds[v].ndim >= 2
     ]
     if variables is not None:
         data_vars = [v for v in variables if v in data_vars]
@@ -292,17 +290,14 @@ def convert_l2w_to_zarr_cog(
     cog_overview_levels = cog_overview_levels or [2, 4, 8, 16]
 
     GRID_MAPPING_NAMES = {
-        "transverse_mercator",
-        "polar_stereographic",
-        "lambert_conformal_conic",
-        "spatial_ref",
-        "crs",
-        "grid_mapping",
+        "transverse_mercator", "polar_stereographic",
+        "lambert_conformal_conic", "spatial_ref", "crs", "grid_mapping",
     }
 
     ds = xr.open_dataset(l2w_nc, decode_coords="all")
     available = [
-        v for v in ds.data_vars if v not in GRID_MAPPING_NAMES and ds[v].ndim >= 2
+        v for v in ds.data_vars
+        if v not in GRID_MAPPING_NAMES and ds[v].ndim >= 2
     ]
     export_vars = [v for v in variables if v in available] if variables else available
 
@@ -313,7 +308,6 @@ def convert_l2w_to_zarr_cog(
     if not (zarr_path.exists() and not overwrite):
         if zarr_path.exists():
             import shutil
-
             shutil.rmtree(zarr_path)
         ds[export_vars].chunk(zarr_chunks).to_zarr(zarr_path, mode="w")
 
@@ -340,13 +334,8 @@ def convert_l2w_to_zarr_cog(
             with rasterio.open(tmp_path) as src:
                 profile = src.profile.copy()
                 profile.update(
-                    driver="GTiff",
-                    tiled=True,
-                    blockxsize=512,
-                    blockysize=512,
-                    compress="deflate",
-                    predictor=2,
-                    interleave="band",
+                    driver="GTiff", tiled=True, blockxsize=512, blockysize=512,
+                    compress="deflate", predictor=2, interleave="band",
                 )
                 data = src.read()
             with rasterio.open(cog_path, "w", **profile) as dst:
@@ -365,7 +354,6 @@ def convert_l2w_to_zarr_cog(
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
-
 
 @dataclass
 class AcoliteConfig:
@@ -387,12 +375,8 @@ class AcoliteConfig:
             )
         self.io.validate()
 
-        if (
-            self.tact.tact_run
-            and self.radcor.aerosol_correction != AcoliteAtmosphericProcessor.TACT
-        ):
+        if self.tact.tact_run and self.radcor.aerosol_correction != AcoliteAtmosphericProcessor.TACT:
             import warnings
-
             warnings.warn(
                 "tact_run=True but aerosol_correction is not 'tact'.",
                 stacklevel=2,
@@ -439,9 +423,7 @@ class AcoliteConfig:
             d["glint_threshold"] = str(self.glint.glint_threshold)
             d["glint_mask_rhos"] = str(self.glint.glint_mask_rhos).lower()
             if self.glint.glint_mask_rhos:
-                d["glint_mask_rhos_threshold"] = str(
-                    self.glint.glint_mask_rhos_threshold
-                )
+                d["glint_mask_rhos_threshold"] = str(self.glint.glint_mask_rhos_threshold)
 
         d["l2w_parameters"] = ",".join(self.l2w.l2w_parameters)
         d["l2w_mask"] = str(self.l2w.l2w_mask).lower()
@@ -455,12 +437,8 @@ class AcoliteConfig:
         d["output_rhos"] = str(self.l2w.output_rhos).lower()
 
         d["export_geotiff"] = str(self.output_format.export_geotiff).lower()
-        d["export_geotiff_coordinates"] = str(
-            self.output_format.export_geotiff_coordinates
-        ).lower()
-        d["export_cloud_optimized_geotiff"] = str(
-            self.output_format.export_cloud_optimized_geotiff
-        ).lower()
+        d["export_geotiff_coordinates"] = str(self.output_format.export_geotiff_coordinates).lower()
+        d["export_cloud_optimized_geotiff"] = str(self.output_format.export_cloud_optimized_geotiff).lower()
         d["netcdf_compression"] = str(self.output_format.netcdf_compression).lower()
         d["netcdf_compression_level"] = str(self.output_format.netcdf_compression_level)
         d["map_rgb"] = str(self.output_format.map_rgb).lower()
@@ -518,13 +496,9 @@ class AcoliteConfig:
             ]
             logger.info(f"[dry_run] Command: {' '.join(cmd)}")
             return {
-                "returncode": None,
-                "log_file": None,
-                "l2w_file": None,
-                "stdout": "",
-                "stderr": "",
-                "inputfile": self.io.inputfile,
-                "output_dir": output_dir,
+                "returncode": None, "log_file": None, "l2w_file": None,
+                "stdout": "", "stderr": "",
+                "inputfile": self.io.inputfile, "output_dir": output_dir,
             }
 
         return self._execute(settings_path)
@@ -535,12 +509,60 @@ class AcoliteConfig:
         base_output,
         dry_run=False,
         continue_on_error=True,
+        use_scl=False,
+        scl_dir=None,
+        scl_kwargs=None,
     ) -> list[dict]:
+        """
+        Run ACOLITE for each SAFE folder in safe_list.
+
+        Parameters
+        ----------
+        safe_list:
+            List of paths to Sentinel-2 SAFE folders.
+        base_output:
+            Parent output directory; per-image subdirectories are created
+            automatically: ``<base_output>/<SAFE_stem>/``.
+        dry_run:
+            If True, log commands without executing.
+        continue_on_error:
+            If True (default), log errors and continue on failure.
+        use_scl:
+            If True, automatically resolve the SCL file for each scene,
+            extract water polygons, and apply polygon clipping.
+            Requires ``scl_dir`` to be set — raises ``ValueError`` immediately
+            if ``scl_dir`` is None.
+        scl_dir:
+            Directory containing SCL GeoTIFF files (typically
+            ``{output_dir}/scl/``).  Required when ``use_scl=True``.
+        scl_kwargs:
+            Optional dict of keyword arguments forwarded to
+            ``with_scl_polygon()`` / ``scl_water_to_geojson()``
+            (e.g. ``{"min_area_m2": 10000, "buffer_m": 30}``).
+
+        Returns
+        -------
+        list[dict]
+            One result dict per image.  Each dict includes a ``scl_used``
+            key (bool) indicating whether polygon clipping was applied.
+        """
+        from rionegromatchup.scl_water import resolve_scl_path
+
         if not Path(self.acolite_executable).expanduser().exists():
             raise FileNotFoundError(
                 f"ACOLITE executable not found: {self.acolite_executable}"
             )
 
+        # Raise early — don't let every scene fail silently
+        if use_scl and scl_dir is None:
+            raise ValueError(
+                "use_scl=True requires scl_dir to be set. "
+                "Pass the directory containing SCL GeoTIFF files "
+                "(typically {output_dir}/scl/)."
+            )
+
+        scl_dir = Path(scl_dir) if scl_dir is not None else None
+        scl_kwargs = scl_kwargs or {}
         base_output = Path(base_output)
         results = []
         total = len(safe_list)
@@ -552,45 +574,64 @@ class AcoliteConfig:
 
             if not safe_path.exists():
                 logger.warning(f"  SAFE folder not found, skipping: {safe_path}")
-                results.append(
-                    {
-                        "returncode": None,
-                        "log_file": None,
-                        "l2w_file": None,
-                        "stdout": "",
-                        "stderr": f"Input not found: {safe_path}",
-                        "inputfile": str(safe_path),
-                        "output_dir": None,
-                        "skipped": True,
-                    }
-                )
+                results.append({
+                    "returncode": None, "log_file": None, "l2w_file": None,
+                    "stdout": "", "stderr": f"Input not found: {safe_path}",
+                    "inputfile": str(safe_path), "output_dir": None,
+                    "skipped": True, "scl_used": False,
+                })
                 continue
 
             image_output = base_output / stem
             image_output.mkdir(parents=True, exist_ok=True)
 
+            # Reset polygon state at the start of each scene to prevent
+            # state bleed from the previous iteration
             original_io = self.io
             self.io = replace(
-                self.io, inputfile=str(safe_path), output=str(image_output)
+                self.io,
+                inputfile=str(safe_path),
+                output=str(image_output),
+                polygon=None,
+                polygon_clip=False,
             )
 
+            scl_used = False
             try:
+                # --- Optional SCL polygon clipping ---
+                if use_scl:
+                    scl_path = resolve_scl_path(safe_path, scl_dir)
+                    if scl_path is None:
+                        logger.warning(
+                            f"  SCL not found for {stem} — "
+                            "processing without polygon clipping."
+                        )
+                    else:
+                        try:
+                            patched = self.with_scl_polygon(
+                                scl_path,
+                                geojson_output_dir=image_output / "geojson",
+                                **scl_kwargs,
+                            )
+                            self.io = patched.io
+                            scl_used = True
+                            logger.info(f"  SCL polygon clipping enabled: {scl_path.name}")
+                        except Exception as e:
+                            logger.warning(
+                                f"  SCL extraction failed for {stem}: {e} — "
+                                "processing without polygon clipping."
+                            )
+
                 try:
                     self.io.validate()
                 except (FileNotFoundError, ValueError) as e:
                     logger.error(f"  Validation failed for {stem}: {e}")
-                    results.append(
-                        {
-                            "returncode": -1,
-                            "log_file": None,
-                            "l2w_file": None,
-                            "stdout": "",
-                            "stderr": str(e),
-                            "inputfile": str(safe_path),
-                            "output_dir": image_output,
-                            "skipped": False,
-                        }
-                    )
+                    results.append({
+                        "returncode": -1, "log_file": None, "l2w_file": None,
+                        "stdout": "", "stderr": str(e),
+                        "inputfile": str(safe_path), "output_dir": image_output,
+                        "skipped": False, "scl_used": scl_used,
+                    })
                     if not continue_on_error:
                         raise
                     continue
@@ -600,22 +641,17 @@ class AcoliteConfig:
                 )
 
                 if dry_run:
-                    results.append(
-                        {
-                            "returncode": None,
-                            "log_file": None,
-                            "l2w_file": None,
-                            "stdout": "",
-                            "stderr": "",
-                            "inputfile": str(safe_path),
-                            "output_dir": image_output,
-                            "skipped": False,
-                        }
-                    )
+                    results.append({
+                        "returncode": None, "log_file": None, "l2w_file": None,
+                        "stdout": "", "stderr": "",
+                        "inputfile": str(safe_path), "output_dir": image_output,
+                        "skipped": False, "scl_used": scl_used,
+                    })
                     continue
 
                 result = self._execute(settings_path)
                 result["skipped"] = False
+                result["scl_used"] = scl_used
                 results.append(result)
 
                 if result["returncode"] != 0 and not continue_on_error:
@@ -665,7 +701,6 @@ class AcoliteConfig:
 # Monkey-patch with_scl_polygon onto AcoliteConfig
 # (defined outside the class body to keep the heredoc clean,
 #  then assigned as a method below)
-
 
 def _with_scl_polygon(
     self,
