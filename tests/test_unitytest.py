@@ -3,7 +3,6 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pandas as pd
-import pytest
 from sentinelhub import BBox, CRS
 
 from rionegromatchup.insitu_data import (
@@ -21,6 +20,7 @@ from rionegromatchup.sentinel_data import (
     get_scl_path,
     SCL_SUBDIR,
 )
+
 
 # ==============================================================================
 # sentinel_data.py tests
@@ -630,3 +630,127 @@ class TestMergeStationsCampaigns:
         )
         merged = merge_stations_campaigns(stations, campaigns)
         assert pd.isna(merged.loc[0, "latitud"])
+
+
+"""
+Unit tests for acolite_spec.py — Step 5: polygon_clip field and validation.
+"""
+
+import pytest
+from rionegromatchup.acolite_spec import IOConfig
+
+
+class TestIOConfigPolygonClip:
+    """Tests for the polygon_clip field and its validation."""
+
+    # --- Default value ---
+
+    def test_polygon_clip_defaults_to_false(self):
+        io = IOConfig(inputfile="", output="")
+        assert io.polygon_clip is False
+
+    # --- Validation ---
+
+    def test_polygon_clip_true_with_polygon_passes(self, tmp_path):
+        polygon_file = tmp_path / "water.geojson"
+        polygon_file.write_text("{}")
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            polygon=str(polygon_file),
+            polygon_clip=True,
+        )
+        # Should not raise
+        io.validate()
+
+    def test_polygon_clip_true_without_polygon_raises(self, tmp_path):
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            polygon=None,
+            polygon_clip=True,
+        )
+        with pytest.raises(
+            ValueError, match="polygon_clip=True requires a valid polygon path"
+        ):
+            io.validate()
+
+    def test_polygon_clip_false_without_polygon_passes(self, tmp_path):
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            polygon=None,
+            polygon_clip=False,
+        )
+        # Should not raise
+        io.validate()
+
+    def test_polygon_clip_false_with_polygon_passes(self, tmp_path):
+        polygon_file = tmp_path / "water.geojson"
+        polygon_file.write_text("{}")
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            polygon=str(polygon_file),
+            polygon_clip=False,
+        )
+        # polygon_clip=False — no constraint on polygon
+        io.validate()
+
+    def test_limit_and_polygon_still_mutually_exclusive(self, tmp_path):
+        polygon_file = tmp_path / "water.geojson"
+        polygon_file.write_text("{}")
+        safe = tmp_path / "scene.SAFE"
+        safe.mkdir()
+
+        io = IOConfig(
+            inputfile=str(safe),
+            output=str(tmp_path),
+            limit=(-33.0, -57.0, -32.5, -56.0),
+            polygon=str(polygon_file),
+        )
+        with pytest.raises(ValueError, match="either `limit` or `polygon`"):
+            io.validate()
+
+    # --- Serialisation ---
+
+    def test_polygon_clip_true_appears_in_settings_dict(self, tmp_path):
+        from rionegromatchup.acolite_spec import AcoliteConfig
+
+        polygon_file = tmp_path / "water.geojson"
+        polygon_file.write_text("{}")
+
+        cfg = AcoliteConfig(
+            acolite_executable="/fake/acolite",
+            io=IOConfig(
+                inputfile="",
+                output="",
+                polygon=str(polygon_file),
+                polygon_clip=True,
+            ),
+        )
+        settings = cfg.to_settings_dict()
+        assert settings.get("polygon_clip") == "true"
+        assert settings.get("polygon") == str(polygon_file)
+
+    def test_polygon_clip_false_absent_from_settings_dict(self):
+        from rionegromatchup.acolite_spec import AcoliteConfig
+
+        cfg = AcoliteConfig(
+            acolite_executable="/fake/acolite",
+            io=IOConfig(inputfile="", output="", polygon_clip=False),
+        )
+        settings = cfg.to_settings_dict()
+        assert "polygon_clip" not in settings
