@@ -199,6 +199,8 @@ def scl_water_to_geojson(
     logger.info(f"Raw polygons before filtering: {len(raw_shapes)}")
 
     # --- Project to metric CRS for area / simplification / buffer ---
+    # estimate_utm_crs() reprojects to WGS84 internally before picking the
+    # zone, so it works correctly regardless of the input CRS.
     gdf = gpd.GeoDataFrame(geometry=raw_shapes, crs=scl_crs)
     utm_crs = gdf.estimate_utm_crs()
     logger.info(f"Using metric CRS for filtering: {utm_crs}")
@@ -248,4 +250,214 @@ def scl_water_to_geojson(
     gdf_out.to_file(output_path, driver="GeoJSON")
 
     logger.info(f"Water polygon GeoJSON written: {output_path}")
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# Feature 2 — SCL path resolution and water polygon datacube
+# ---------------------------------------------------------------------------
+
+
+def resolve_scl_path(
+    safe_path: Path | str,
+    scl_dir: Path | str,
+) -> Optional[Path]:
+    """
+    Derive the expected local SCL GeoTIFF path for a given SAFE folder.
+
+    Resolution strategy
+    -------------------
+    1. Primary:  ``{scl_dir}/{stem}_SCL.tif``
+       where ``stem`` is the SAFE folder name without the ``.SAFE`` extension.
+       This matches the naming convention used by ``download_scl_asset``
+       in ``sentinel_data.py``.
+    2. Fallback: glob ``{scl_dir}/*{timestamp}*_SCL.tif``
+       where ``timestamp`` is the compact acquisition datetime extracted
+       from the SAFE stem (e.g. ``20170713T135111``).  Useful when the
+       product baseline component of the filename differs between the
+       SAFE folder and the downloaded SCL file.
+
+    Returns ``None`` (with a warning) if neither strategy finds a file.
+
+    Parameters
+    ----------
+    safe_path:
+        Path to the Sentinel-2 SAFE folder
+        (e.g. ``data/sentinel_downloads/S2A_MSIL1C_20170713T135111_...SAFE``).
+    scl_dir:
+        Directory containing SCL GeoTIFF files
+        (typically ``{output_dir}/scl/``).
+
+    Returns
+    -------
+    Path or None
+        Resolved path to the SCL file, or None if not found.
+    """
+    safe_path = Path(safe_path)
+    scl_dir = Path(scl_dir)
+
+    stem = safe_path.stem  # strips .SAFE if present
+
+    # --- Primary: exact name match ---
+    primary = scl_dir / f"{stem}_SCL.tif"
+    if primary.exists():
+        logger.info(f"SCL resolved (primary): {primary}")
+        return primary
+
+    # --- Fallback: match on acquisition timestamp ---
+    # Extract compact datetime component, e.g. "20170713T135111"
+    ts_match = re.search(r"_(\d{8}T\d{6})_", safe_path.name)
+    if ts_match:
+        timestamp = ts_match.group(1)
+        candidates = list(scl_dir.glob(f"*{timestamp}*_SCL.tif"))
+        if candidates:
+            fallback = candidates[0]
+            logger.info(f"SCL resolved (fallback timestamp match): {fallback}")
+            return fallback
+
+    logger.warning(
+        f"SCL file not found for {safe_path.name} in {scl_dir}. "
+        "Download it first with sentinel_data.download_scl_asset()."
+    )
+    return None
+
+
+def build_water_polygon_datacube(
+    records: list[dict],
+    output_path: Path | str,
+    overwrite: bool = False,
+    **scl_kwargs,
+) -> Path:
+    """
+    Process a list of SCL scenes and accumulate their water body polygons
+    into a single GeoPackage vector datacube.
+
+    Each record in ``records`` must contain ``scl_path`` and may optionally
+    include ``date`` and ``scene_id``.  Intermediate GeoJSON files are
+    written to ``{output_path.parent}/geojson/`` and kept on disk.
+
+    The function is **idempotent**: if ``output_path`` already exists,
+    existing ``(scene_id, date)`` pairs are loaded and any duplicate
+    scenes in the new batch are skipped with a warning.
+
+    Parameters
+    ----------
+    records:
+        List of dicts, each with:
+            - ``scl_path`` (required): Path to the SCL GeoTIFF.
+            - ``date`` (optional): Acquisition date ``YYYY-MM-DD``;
+              auto-detected from filename if absent.
+            - ``scene_id`` (optional): Scene identifier; defaults to the
+              SCL filename stem.
+    output_path:
+        Destination GeoPackage file (``.gpkg``).  Created on first call;
+        appended to on subsequent calls.
+    overwrite:
+        If ``True``, delete any existing GeoPackage and rebuild from
+        scratch.  If ``False`` (default), append incrementally.
+    **scl_kwargs:
+        Extra keyword arguments forwarded to ``scl_water_to_geojson``
+        (e.g. ``min_area_m2``, ``buffer_m``, ``simplify_tolerance``).
+
+    Returns
+    -------
+    Path
+        Path to the GeoPackage file.
+    """
+    try:
+        import geopandas as gpd
+        import pandas as pd
+    except ImportError as exc:
+        raise ImportError(
+            "build_water_polygon_datacube requires geopandas and pandas.\n"
+            f"Original error: {exc}"
+        ) from exc
+
+    output_path = Path(output_path)
+    geojson_dir = output_path.parent / GEOJSON_SUBDIR
+
+    # --- Handle overwrite ---
+    if overwrite and output_path.exists():
+        output_path.unlink()
+        logger.info(f"Existing datacube removed for overwrite: {output_path}")
+
+    # --- Load existing datacube to check for duplicates ---
+    existing_keys: set[tuple] = set()
+    if output_path.exists():
+        existing = gpd.read_file(output_path)
+        for _, row in existing.iterrows():
+            existing_keys.add((row["scene_id"], str(row["date"])[:10]))
+        logger.info(
+            f"Loaded existing datacube: {len(existing)} features, "
+            f"{len(existing_keys)} unique (scene_id, date) pairs."
+        )
+
+    new_gdfs: list[gpd.GeoDataFrame] = []
+    stats = {"processed": 0, "skipped_duplicate": 0, "skipped_no_water": 0, "errors": 0}
+
+    for record in records:
+        scl_path = Path(record["scl_path"])
+        scene_date = record.get("date") or _parse_date_from_filename(scl_path.name)
+        scene_id = record.get("scene_id") or scl_path.stem
+
+        # --- Duplicate check ---
+        key = (scene_id, str(scene_date)[:10] if scene_date else None)
+        if key in existing_keys:
+            logger.warning(
+                f"Duplicate (scene_id={scene_id}, date={scene_date}) — skipping."
+            )
+            stats["skipped_duplicate"] += 1
+            continue
+
+        # --- Derive GeoJSON output path ---
+        geojson_path = geojson_dir / f"{scene_id}_water.geojson"
+
+        # --- Extract water polygon ---
+        try:
+            scl_water_to_geojson(
+                scl_path=scl_path,
+                output_path=geojson_path,
+                scene_date=scene_date,
+                scene_id=scene_id,
+                **scl_kwargs,
+            )
+        except ValueError as exc:
+            logger.warning(f"Skipping {scene_id}: {exc}")
+            stats["skipped_no_water"] += 1
+            continue
+        except Exception as exc:
+            logger.error(f"Error processing {scene_id}: {exc}")
+            stats["errors"] += 1
+            continue
+
+        new_gdfs.append(gpd.read_file(geojson_path))
+        existing_keys.add(key)
+        stats["processed"] += 1
+
+    # --- Append new features to GeoPackage ---
+    if new_gdfs:
+        new_combined = pd.concat(new_gdfs, ignore_index=True)
+
+        if output_path.exists():
+            existing_gdf = gpd.read_file(output_path)
+            combined = pd.concat([existing_gdf, new_combined], ignore_index=True)
+        else:
+            combined = new_combined
+
+        # Sort chronologically
+        combined = combined.sort_values("date", ignore_index=True)
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        combined.to_file(output_path, driver="GPKG")
+        logger.info(f"Datacube written: {output_path} ({len(combined)} total features)")
+    else:
+        logger.info("No new features to append.")
+
+    logger.info(
+        f"Summary — processed: {stats['processed']}, "
+        f"duplicate skipped: {stats['skipped_duplicate']}, "
+        f"no water: {stats['skipped_no_water']}, "
+        f"errors: {stats['errors']}"
+    )
+
     return output_path
