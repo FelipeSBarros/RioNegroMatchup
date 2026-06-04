@@ -44,6 +44,20 @@ SCL_SUBDIR = "scl"
 
 
 def _tile_from_scene_id(scene_id: str) -> str | None:
+    """
+    Extract the 5-character MGRS tile code from a Sentinel-2 scene ID or href.
+
+    Two formats are supported:
+
+    Pattern 1 — ``_T21HUD_`` style, used in L1C/L2A product IDs and SAFE paths:
+        ``S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD_20230919T094731``
+
+    Pattern 2 — ``/21/H/UD/`` style, used in EarthSearch S3 asset hrefs:
+        ``https://sentinel-cogs.s3.us-west-2.amazonaws.com/.../21/H/UD/2020/5/.../SCL.tif``
+
+    Returns the 5-character tile string (e.g. ``'21HUD'``), or ``None``
+    if no match is found.
+    """
     # Pattern 1: _T21HUD_ style (scene IDs, SAFE paths)
     match = re.search(r"_T([0-9]{2}[A-Z]{3})(?:_|\.SAFE|$)", scene_id)
     if match:
@@ -115,11 +129,13 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
             ).items()
         )
 
-        scl_href = None
+        scl_hrefs = []
         if l2a_results:
-            scl_asset = l2a_results[0].assets.get("scl")
-            scl_href = scl_asset.href if scl_asset else None
-            if not scl_href:
+            for l2a_item in l2a_results:
+                scl_asset = l2a_item.assets.get("scl")
+                if scl_asset:
+                    scl_hrefs.append(scl_asset.href)
+            if not scl_hrefs:
                 logger.warning(f"  SCL asset não encontrado para {item_id}")
         else:
             logger.warning(
@@ -135,7 +151,7 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
                 "cloud_cover": item["properties"]["eo:cloud_cover"],
                 "href": item["assets"]["data"]["href"],
                 "delta_days": delta_days,
-                "l2a_cls": scl_href,
+                "l2a_cls": scl_hrefs,
             }
         )
 
@@ -191,15 +207,30 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
                     )
                     continue
 
-            # --- SCL tile filter ---
-            if img["l2a_cls"] is not None:
-                scl_tile = _tile_from_scene_id(img["l2a_cls"])
-                if filter_by_tile and scl_tile != expected_tile:
-                    logger.warning(
-                        f"  SCL href tile {scl_tile} does not match expected "
-                        f"{expected_tile} for {scene_id} — discarding SCL asset."
+            # --- SCL tile resolution ---
+            # Pick the first href whose tile matches; fall back to the first
+            # available href when tile filtering is disabled.
+            scl_hrefs = img["l2a_cls"]  # list collected by search_images
+            if scl_hrefs:
+                if filter_by_tile:
+                    matched_scl = next(
+                        (
+                            h
+                            for h in scl_hrefs
+                            if _tile_from_scene_id(h) == expected_tile
+                        ),
+                        None,
                     )
-                    img = {**img, "l2a_cls": None}
+                    if matched_scl is None:
+                        logger.warning(
+                            f"  No SCL href matched tile {expected_tile} for "
+                            f"{scene_id} — discarding SCL asset."
+                        )
+                else:
+                    matched_scl = scl_hrefs[0]
+            else:
+                matched_scl = None
+            img = {**img, "l2a_cls": matched_scl}
 
             if scene_id not in scenes_by_date[date]:
                 scenes_by_date[date][scene_id] = img

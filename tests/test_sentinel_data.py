@@ -140,7 +140,7 @@ class TestSearchImages:
             mock_client.search.return_value = mock_search
 
             result = search_images(bbox, "2025-08-01", time_delta=1, cloud_cover=10)
-            assert result[0]["l2a_cls"] is None
+            assert result[0]["l2a_cls"] == []
 
 
 class TestBuildCatalog:

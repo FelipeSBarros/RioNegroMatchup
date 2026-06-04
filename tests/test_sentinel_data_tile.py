@@ -1,5 +1,6 @@
 """
 Tests for _tile_from_scene_id and the tile-filtering logic in build_catalog.
+Appended as a separate file to avoid touching the existing test suite.
 """
 
 import json
@@ -32,14 +33,6 @@ class TestTileFromSceneId:
             "/items/S2A_MSIL2A_20170713T135111_N0500_R024_T21HUD_20230919T094731"
         )
         assert _tile_from_scene_id(href) == "21HUD"
-
-    def test_extracts_tile_from_earthsearch_s3_href(self):
-        href = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/21/H/UD/2020/5/S2B_21HUD_20200513_0_L2A/SCL.tif"
-        assert _tile_from_scene_id(href) == "21HUD"
-
-    def test_extracts_tile_from_earthsearch_s3_href_different_tile(self):
-        href = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/21/H/VD/2020/5/S2B_21HVD_20200513_0_L2A/SCL.tif"
-        assert _tile_from_scene_id(href) == "21HVD"
 
     def test_returns_none_for_unrecognised_string(self):
         assert _tile_from_scene_id("unexpected_filename.tif") is None
@@ -86,8 +79,12 @@ def _make_csv_without_tile(tmp_path) -> Path:
 
 def _fake_image(tile="21HUD", scl_tile="21HUD"):
     scene_id = f"S2A_MSIL1C_20250801T101031_N0500_R024_T{tile}_20230919T094731"
+    # Use EarthSearch S3 href format (/ZZ/B/SS/) so pattern 2 of
+    # _tile_from_scene_id is exercised in the SCL tile filter.
+    zone, band, square = scl_tile[:2], scl_tile[2], scl_tile[3:]
     scl_href = (
-        f"https://fake.com/S2A_MSIL2A_20250801T101031_N0500_R024_T{scl_tile}_x/SCL.tif"
+        f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/"
+        f"sentinel-s2-l2a-cogs/{zone}/{band}/{square}/2025/8/fake/SCL.tif"
     )
     return {
         "id": scene_id,
@@ -95,7 +92,7 @@ def _fake_image(tile="21HUD", scl_tile="21HUD"):
         "cloud_cover": 5,
         "href": "https://eodata.dataspace.copernicus.eu/eodata/fake/path",
         "delta_days": 0,
-        "l2a_cls": scl_href,
+        "l2a_cls": [scl_href],  # list, as returned by the updated search_images
     }
 
 
