@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -40,6 +41,24 @@ s3 = boto3.resource(
 
 # Subdirectory name used for all SCL GeoTIFF files under the download root.
 SCL_SUBDIR = "scl"
+
+
+def _tile_from_scene_id(scene_id: str) -> str | None:
+    """
+    Extract the 5-character MGRS tile code from a Sentinel-2 scene ID.
+
+    Matches the ``_T{5chars}_`` component present in both L1C product IDs
+    (e.g. ``S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD_20230919T094731``)
+    and L2A EarthSearch asset hrefs
+    (e.g. ``...sentinel-2-l2a/21HUD/...`` or ``..._T21HUD_...``).
+
+    Returns the 5-character tile string (e.g. ``'21HUD'``), or ``None``
+    if no match is found.
+    """
+    match = re.search(r"_T([0-9]{2}[A-Z]{3})(?:_|\.SAFE|$)", scene_id)
+    if match:
+        return match.group(1)
+    return None
 
 
 def create_bbox_from_point(lon: float, lat: float, buffer_degrees=0.01):
@@ -135,21 +154,57 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
     if "longitud" not in df.columns or "latitud" not in df.columns:
         raise ValueError("longitud or latitud columns not found in CSV")
 
+    # --- Tile filtering ---
+    filter_by_tile = "s2_tile" in df.columns
+    if not filter_by_tile:
+        logger.warning(
+            "Column 's2_tile' not found in CSV — tile filtering will be skipped. "
+            "All scenes overlapping the search bbox will be included in the catalog. "
+            "Re-run insitu_data.py in campaigns mode to generate a CSV with s2_tile."
+        )
+
     unique_dates_places = df[["date", "longitud", "latitud"]].drop_duplicates()
+    if filter_by_tile:
+        unique_dates_places = df[
+            ["date", "longitud", "latitud", "s2_tile"]
+        ].drop_duplicates()
 
     scenes_by_date: dict[str, dict] = defaultdict(dict)
 
     for idx, row in unique_dates_places.iterrows():
         date = row["date"]
+        expected_tile = row["s2_tile"] if filter_by_tile else None
         bbox_geometry = create_bbox_from_point(row["longitud"], row["latitud"])
 
         logger.info(
             f"Processando data {date} | lon={row['longitud']} lat={row['latitud']}"
+            + (f" | tile={expected_tile}" if filter_by_tile else "")
         )
         images = search_images(bbox_geometry, date, time_delta, cloud_cover)
 
         for img in images:
             scene_id = img["id"]
+
+            # --- L1C tile filter ---
+            if filter_by_tile:
+                scene_tile = _tile_from_scene_id(scene_id)
+                if scene_tile != expected_tile:
+                    logger.debug(
+                        f"  Discarding {scene_id}: tile {scene_tile} != "
+                        f"expected {expected_tile}"
+                    )
+                    continue
+
+            # --- SCL tile filter ---
+            if img["l2a_cls"] is not None:
+                scl_tile = _tile_from_scene_id(img["l2a_cls"])
+                if filter_by_tile and scl_tile != expected_tile:
+                    logger.warning(
+                        f"  SCL href tile {scl_tile} does not match expected "
+                        f"{expected_tile} for {scene_id} — discarding SCL asset."
+                    )
+                    img = {**img, "l2a_cls": None}
+
             if scene_id not in scenes_by_date[date]:
                 scenes_by_date[date][scene_id] = img
                 logger.info(f"  Nova cena adicionada: {scene_id}")
