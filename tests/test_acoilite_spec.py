@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rionegromatchup.acolite_spec import IOConfig
+from rionegromatchup.acolite_spec import IOConfig, RadCorConfig
 
 
 class TestIOConfigPolygonClip:
@@ -622,3 +622,132 @@ class TestRunBatchSclExtension:
 
         assert results[0]["returncode"] is None
         assert results[0]["scl_used"] is True
+
+
+# ---------------------------------------------------------------------------
+# AcoliteConfig.low_memory — preset tests
+# ---------------------------------------------------------------------------
+
+
+class TestLowMemoryPreset:
+    """Tests for AcoliteConfig.low_memory() classmethod."""
+
+    def test_returns_acolite_config(self):
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        assert isinstance(cfg, AcoliteConfig)
+
+    def test_dsf_tile_dimensions_reduced(self):
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        assert cfg.radcor.dsf_tile_dimensions == (60, 60)
+
+    def test_dsf_path_reflectance_is_tiled(self):
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        assert cfg.radcor.dsf_path_reflectance == "tiled"
+
+    def test_export_cog_is_false(self):
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        assert cfg.output_format.export_cloud_optimized_geotiff is False
+
+    def test_map_rgb_is_false(self):
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        assert cfg.output_format.map_rgb is False
+
+    def test_netcdf_compression_level_is_2(self):
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        assert cfg.output_format.netcdf_compression_level == 2
+
+    def test_output_rhorc_is_false(self):
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        assert cfg.l2w.output_rhorc is False
+
+    def test_kwargs_forwarded_io(self, tmp_path):
+        io = IOConfig(inputfile="", output=str(tmp_path))
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite", io=io)
+        assert cfg.io.output == str(tmp_path)
+
+    def test_settings_dict_contains_tile_dimensions(self):
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        settings = cfg.to_settings_dict()
+        assert settings["dsf_tile_dimensions"] == "60,60"
+
+    def test_settings_dict_contains_correct_compression_level(self):
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        settings = cfg.to_settings_dict()
+        assert settings["netcdf_compression_level"] == "2"
+
+    def test_can_override_tile_dimensions_directly(self):
+        """Tile dimensions can be further reduced by constructing RadCorConfig manually."""
+        from dataclasses import replace as dc_replace
+        cfg = AcoliteConfig.low_memory(acolite_executable="/fake/acolite")
+        cfg_smaller = dc_replace(cfg, radcor=RadCorConfig(dsf_tile_dimensions=(30, 30)))
+        assert cfg_smaller.radcor.dsf_tile_dimensions == (30, 30)
+
+
+# ---------------------------------------------------------------------------
+# Logging — to_settings_file and _with_scl_polygon
+# ---------------------------------------------------------------------------
+
+import logging
+
+
+class TestLogging:
+    """Smoke tests confirming key log messages are emitted."""
+
+    def test_to_settings_file_logs_roi_limit(self, tmp_path, caplog):
+        cfg = AcoliteConfig(
+            acolite_executable="/fake/acolite",
+            io=IOConfig(
+                inputfile="",
+                output="",
+                limit=(-33.0, -57.0, -32.5, -56.0),
+            ),
+        )
+        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+            cfg.to_settings_file(tmp_path / "settings.txt")
+
+        assert any("ROI" in m for m in caplog.messages)
+        assert any("-33.0" in m for m in caplog.messages)
+
+    def test_to_settings_file_logs_polygon(self, tmp_path, caplog):
+        polygon_file = tmp_path / "water.geojson"
+        polygon_file.write_text("{}")
+        cfg = AcoliteConfig(
+            acolite_executable="/fake/acolite",
+            io=IOConfig(
+                inputfile="",
+                output="",
+                polygon=str(polygon_file),
+                polygon_clip=True,
+            ),
+        )
+        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+            cfg.to_settings_file(tmp_path / "settings.txt")
+
+        assert any("polygon_clip=true" in m for m in caplog.messages)
+
+    def test_to_settings_file_logs_full_scene_when_no_roi(self, tmp_path, caplog):
+        cfg = AcoliteConfig(
+            acolite_executable="/fake/acolite",
+            io=IOConfig(inputfile="", output=""),
+        )
+        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+            cfg.to_settings_file(tmp_path / "settings.txt")
+
+        assert any("full scene" in m for m in caplog.messages)
+
+    def test_with_scl_polygon_logs_scl_name(self, tmp_path, caplog):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+            cfg.with_scl_polygon(scl, min_area_m2=0)
+
+        assert any(scl.name in m for m in caplog.messages)
+
+    def test_with_scl_polygon_logs_polygon_path(self, tmp_path, caplog):
+        scl = _make_scl(tmp_path)
+        cfg = _make_cfg(tmp_path)
+        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+            result = cfg.with_scl_polygon(scl, min_area_m2=0)
+
+        assert any(".geojson" in m for m in caplog.messages)
+        assert any(Path(result.io.polygon).name in m for m in caplog.messages)
