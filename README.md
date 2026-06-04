@@ -99,7 +99,7 @@ For SCL-based water masking, use `with_scl_polygon()` to restrict processing to 
 
 ```python
 result = cfg.with_scl_polygon(
-    "data/sentinel_downloads/scl/S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD_SCL.tif"
+    "data/sentinel_downloads/scl/S2B_MSIL1C_20200513T135109_N0500_R024_T21HVD_20230430T050652_SCL.tif"
 ).run()
 ```
 
