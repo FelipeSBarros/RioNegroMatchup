@@ -475,6 +475,12 @@ class AcoliteConfig:
         settings = self.to_settings_dict()
         lines = [f"{k}={v}\n" for k, v in settings.items()]
         out.write_text("".join(lines))
+
+        roi = settings.get("limit") or settings.get("polygon") or "full scene"
+        polygon_clip = settings.get("polygon_clip", "false")
+        logger.info(
+            f"Settings written: {out.name} | ROI={roi} | polygon_clip={polygon_clip}"
+        )
         return out
 
     def _execute(self, settings_path: Path) -> dict:
@@ -741,6 +747,44 @@ class AcoliteConfig:
         io = IOConfig(inputfile=inputfile, output=output_dir, limit=limit)
         return cls(acolite_executable=acolite_executable, io=io, **kwargs)
 
+    @classmethod
+    def low_memory(cls, acolite_executable: str, **kwargs) -> "AcoliteConfig":
+        """
+        Returns an AcoliteConfig tuned to reduce peak memory usage.
+
+        Key changes vs defaults:
+        - dsf_tile_dimensions reduced to (60, 60) — processes scene in smaller
+          chunks during atmospheric correction (default is 120×120).
+        - output_rhorc=False — skip an extra reflectance output array.
+        - export_cloud_optimized_geotiff=False — COG overview building is
+          memory-intensive; disable unless you specifically need it.
+        - map_rgb=False — skips an additional in-memory composite.
+        - netcdf_compression_level=2 — lower compression = less CPU/RAM pressure
+          during write (trades slightly larger files for stability).
+
+        All other parameters remain at their defaults and can be overridden
+        via kwargs (e.g. pass io=IOConfig(...) to set paths).
+        """
+        return cls(
+            acolite_executable=acolite_executable,
+            radcor=RadCorConfig(
+                dsf_tile_dimensions=(60, 60),  # smaller tiles → lower peak RAM
+                dsf_path_reflectance="tiled",  # already default, made explicit
+            ),
+            l2w=L2WConfig(
+                output_rhorc=False,
+                output_rhos=True,
+                l2w_mask_water_expr="rhos_1600 < 0.0215",
+            ),
+            output_format=OutputConfig(
+                export_cloud_optimized_geotiff=False,
+                map_rgb=False,
+                netcdf_compression=True,
+                netcdf_compression_level=2,
+            ),
+            **kwargs,
+        )
+
     def __repr__(self) -> str:
         settings = self.to_settings_dict()
         lines = "\n".join(f"  {k} = {v}" for k, v in settings.items())
@@ -818,9 +862,12 @@ def _with_scl_polygon(
         overwrite=overwrite,
         **scl_kwargs,
     )
-    logger.info(f"with_scl_polygon: polygon set to {geojson_path}")
+    logger.info(f"with_scl_polygon: polygon written → {geojson_path.name}")
+    logger.info(
+        f"with_scl_polygon: polygon_clip=True | limit cleared | "
+        f"polygon={geojson_path}"
+    )
 
-    # Return a new config with polygon wired up; clear limit (mutually exclusive)
     new_io = replace(self.io, polygon=str(geojson_path), polygon_clip=True, limit=None)
     return replace(self, io=new_io)
 
