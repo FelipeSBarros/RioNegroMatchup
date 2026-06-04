@@ -16,7 +16,13 @@ It will look for Water Quality data, clean and organize it.
 
 In case of using OAN's field campaigns data:
 ```python
+# default paths (unchanged behaviour)
 python rionegromatchup/insitu_data.py --mode campaigns
+
+# custom files
+python rionegromatchup/insitu_data.py --mode campaigns \
+  --stations data/original_data/my_stations.xlsx \
+  --campaigns data/original_data/my_export.xlsx
 ```
 This process will read campaigns data, organize and clean its values, and then merge with stations data, writing the results to `./data/monitoring_data/campaigns_organized.csv`
 
