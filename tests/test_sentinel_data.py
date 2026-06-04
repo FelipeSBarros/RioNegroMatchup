@@ -100,7 +100,7 @@ class TestSearchImages:
                 "cloud_cover",
                 "href",
                 "delta_days",
-                "l2a_cls",
+                "l2a_scl",
             ]:
                 assert key in result[0]
 
@@ -129,7 +129,7 @@ class TestSearchImages:
             result = search_images(bbox, "2025-08-01", time_delta=1, cloud_cover=10)
             assert result == []
 
-    def test_l2a_cls_is_none_when_no_l2a_found(self):
+    def test_l2a_scl_is_none_when_no_l2a_found(self):
         bbox = create_bbox_from_point(-56.5, -32.85)
         with patch("rionegromatchup.sentinel_data.catalog") as mock_catalog, patch(
             "rionegromatchup.sentinel_data.client"
@@ -140,7 +140,7 @@ class TestSearchImages:
             mock_client.search.return_value = mock_search
 
             result = search_images(bbox, "2025-08-01", time_delta=1, cloud_cover=10)
-            assert result[0]["l2a_cls"] is None
+            assert result[0]["l2a_scl"] == []
 
 
 class TestBuildCatalog:
@@ -166,7 +166,7 @@ class TestBuildCatalog:
             "cloud_cover": 5,
             "href": "https://fake-link.com/product",
             "delta_days": 0,
-            "l2a_cls": "https://fake-link.com/SCL.tif",
+            "l2a_scl": "https://fake-link.com/SCL.tif",
         }
         with patch(
             "rionegromatchup.sentinel_data.search_images", return_value=[fake_image]
@@ -184,7 +184,7 @@ class TestBuildCatalog:
             "cloud_cover": 5,
             "href": "https://fake-link.com/product",
             "delta_days": 0,
-            "l2a_cls": "https://fake-link.com/SCL.tif",
+            "l2a_scl": "https://fake-link.com/SCL.tif",
         }
         with patch(
             "rionegromatchup.sentinel_data.search_images", return_value=[fake_image]
@@ -235,7 +235,7 @@ class TestBuildCatalog:
             "cloud_cover": 5,
             "href": "https://fake-link.com/product",
             "delta_days": 0,
-            "l2a_cls": "https://fake-link.com/SCL.tif",
+            "l2a_scl": "https://fake-link.com/SCL.tif",
         }
 
         with patch(
@@ -266,7 +266,7 @@ class TestBuildCatalog:
             "cloud_cover": 5,
             "href": "https://fake-link.com/product",
             "delta_days": 0,
-            "l2a_cls": "https://fake-link.com/SCL.tif",
+            "l2a_scl": "https://fake-link.com/SCL.tif",
         }
         with patch(
             "rionegromatchup.sentinel_data.search_images", return_value=[fake_image]
@@ -389,7 +389,7 @@ class TestRunDownload:
                     {
                         "id": "IMG1",
                         "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG1/path",
-                        "l2a_cls": "https://fake.com/IMG1_SCL.tif",
+                        "l2a_scl": "https://fake.com/IMG1_SCL.tif",
                     },
                 ],
             },
@@ -399,12 +399,12 @@ class TestRunDownload:
                     {
                         "id": "IMG2",
                         "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG2/path",
-                        "l2a_cls": "https://fake.com/IMG2_SCL.tif",
+                        "l2a_scl": "https://fake.com/IMG2_SCL.tif",
                     },
                     {
                         "id": "IMG3",
                         "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG3/path",
-                        "l2a_cls": "https://fake.com/IMG3_SCL.tif",
+                        "l2a_scl": "https://fake.com/IMG3_SCL.tif",
                     },
                 ],
             },

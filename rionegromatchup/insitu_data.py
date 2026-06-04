@@ -325,6 +325,18 @@ if __name__ == "__main__":
             "has already been cleaned by OAN before export."
         ),
     )
+    parser.add_argument(
+        "--stations",
+        type=Path,
+        default=Path("./data/original_data/estaciones-seleccionadas.xlsx"),
+        help="Path to the stations file (.xlsx or .csv). Only used in campaigns mode.",
+    )
+    parser.add_argument(
+        "--campaigns",
+        type=Path,
+        default=Path("./data/original_data/campaigns_sample.xlsx"),
+        help="Path to the campaigns file (.xlsx or .csv). Only used in campaigns mode.",
+    )
     FINAL_PATH = Path("./data/monitoring_data/Automatic_WQ_monitoring_stations.csv")
     args = parser.parse_args()
 
@@ -341,10 +353,8 @@ if __name__ == "__main__":
         build_final_csv(INPUT_DIR, FINAL_PATH, stations_coords)
 
     elif args.mode == "campaigns":
-        STATIONS_PATH = Path("./data/original_data/estaciones-seleccionadas.xlsx")
-        CAMPAIGNS_PATH = Path(
-            "./data/original_data/extraccion_20260527-203952_simple.xlsx"
-        )
+        STATIONS_PATH = args.stations
+        CAMPAIGNS_PATH = args.campaigns
         OUTPUT_CAMPAIGNS_PATH = Path("./data/monitoring_data/campaigns_organized.csv")
         UNIQUE_DATA_PATH = Path("./data/monitoring_data/campaigns_unique_data.csv")
 
