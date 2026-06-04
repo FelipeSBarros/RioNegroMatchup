@@ -151,7 +151,7 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
                 "cloud_cover": item["properties"]["eo:cloud_cover"],
                 "href": item["assets"]["data"]["href"],
                 "delta_days": delta_days,
-                "l2a_cls": scl_hrefs,
+                "l2a_scl": scl_hrefs,
             }
         )
 
@@ -210,7 +210,7 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
             # --- SCL tile resolution ---
             # Pick the first href whose tile matches; fall back to the first
             # available href when tile filtering is disabled.
-            scl_hrefs = img["l2a_cls"]  # list collected by search_images
+            scl_hrefs = img["l2a_scl"]  # list collected by search_images
             if scl_hrefs:
                 if filter_by_tile:
                     matched_scl = next(
@@ -230,7 +230,7 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
                     matched_scl = scl_hrefs[0]
             else:
                 matched_scl = None
-            img = {**img, "l2a_cls": matched_scl}
+            img = {**img, "l2a_scl": matched_scl}
 
             if scene_id not in scenes_by_date[date]:
                 scenes_by_date[date][scene_id] = img
@@ -422,7 +422,7 @@ def run_download(
                 if download_scl and not status["scl_exists"]:
                     logger.info(f"  Baixando SCL para {product_core_id}...")
                     scl_path = download_scl_asset(
-                        output_dir, product_core_id, img["l2a_cls"]
+                        output_dir, product_core_id, img["l2a_scl"]
                     )
                     stats["scl_downloaded"] += 1
                     logger.info(f"  ✓ SCL baixado: {scl_path}")

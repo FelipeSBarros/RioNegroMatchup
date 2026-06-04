@@ -92,7 +92,7 @@ def _fake_image(tile="21HUD", scl_tile="21HUD"):
         "cloud_cover": 5,
         "href": "https://eodata.dataspace.copernicus.eu/eodata/fake/path",
         "delta_days": 0,
-        "l2a_cls": [scl_href],  # list, as returned by the updated search_images
+        "l2a_scl": [scl_href],  # list, as returned by the updated search_images
     }
 
 
@@ -183,7 +183,7 @@ class TestBuildCatalogTileFilter:
             build_catalog(csv, output_json)
 
         data = json.loads(output_json.read_text())
-        assert data[0]["images_found"][0]["l2a_cls"] is None
+        assert data[0]["images_found"][0]["l2a_scl"] is None
 
     def test_matching_scl_tile_preserved(self, tmp_path):
         """SCL href from the correct tile must be kept as-is."""
@@ -198,4 +198,4 @@ class TestBuildCatalogTileFilter:
             build_catalog(csv, output_json)
 
         data = json.loads(output_json.read_text())
-        assert data[0]["images_found"][0]["l2a_cls"] is not None
+        assert data[0]["images_found"][0]["l2a_scl"] is not None
