@@ -44,20 +44,16 @@ SCL_SUBDIR = "scl"
 
 
 def _tile_from_scene_id(scene_id: str) -> str | None:
-    """
-    Extract the 5-character MGRS tile code from a Sentinel-2 scene ID.
-
-    Matches the ``_T{5chars}_`` component present in both L1C product IDs
-    (e.g. ``S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD_20230919T094731``)
-    and L2A EarthSearch asset hrefs
-    (e.g. ``...sentinel-2-l2a/21HUD/...`` or ``..._T21HUD_...``).
-
-    Returns the 5-character tile string (e.g. ``'21HUD'``), or ``None``
-    if no match is found.
-    """
+    # Pattern 1: _T21HUD_ style (scene IDs, SAFE paths)
     match = re.search(r"_T([0-9]{2}[A-Z]{3})(?:_|\.SAFE|$)", scene_id)
     if match:
         return match.group(1)
+
+    # Pattern 2: /21/H/UD/ style (EarthSearch S3 hrefs)
+    match = re.search(r"/(\d{2})/([A-Z])/([A-Z]{2})/", scene_id)
+    if match:
+        return match.group(1) + match.group(2) + match.group(3)
+
     return None
 
 
@@ -197,6 +193,7 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
 
             # --- SCL tile filter ---
             if img["l2a_cls"] is not None:
+                logger.info(f"******CLS {img["l2a_cls"]}")
                 scl_tile = _tile_from_scene_id(img["l2a_cls"])
                 if filter_by_tile and scl_tile != expected_tile:
                     logger.warning(

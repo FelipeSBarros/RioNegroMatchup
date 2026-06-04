@@ -7,9 +7,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
-import pytest
 
 from rionegromatchup.sentinel_data import _tile_from_scene_id, build_catalog
+
 
 # ---------------------------------------------------------------------------
 # _tile_from_scene_id
@@ -32,6 +32,14 @@ class TestTileFromSceneId:
             "/items/S2A_MSIL2A_20170713T135111_N0500_R024_T21HUD_20230919T094731"
         )
         assert _tile_from_scene_id(href) == "21HUD"
+
+    def test_extracts_tile_from_earthsearch_s3_href(self):
+        href = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/21/H/UD/2020/5/S2B_21HUD_20200513_0_L2A/SCL.tif"
+        assert _tile_from_scene_id(href) == "21HUD"
+
+    def test_extracts_tile_from_earthsearch_s3_href_different_tile(self):
+        href = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/21/H/VD/2020/5/S2B_21HVD_20200513_0_L2A/SCL.tif"
+        assert _tile_from_scene_id(href) == "21HVD"
 
     def test_returns_none_for_unrecognised_string(self):
         assert _tile_from_scene_id("unexpected_filename.tif") is None
