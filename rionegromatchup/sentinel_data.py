@@ -193,7 +193,6 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
 
             # --- SCL tile filter ---
             if img["l2a_cls"] is not None:
-                logger.info(f"******CLS {img["l2a_cls"]}")
                 scl_tile = _tile_from_scene_id(img["l2a_cls"])
                 if filter_by_tile and scl_tile != expected_tile:
                     logger.warning(
