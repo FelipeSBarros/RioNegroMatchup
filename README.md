@@ -6,6 +6,9 @@ Python package and scripts to match Sentinel-2 satellite imagery with in situ wa
 
 ![](./Workflow.png)
 
+**Color coding**: teal for the five pipeline steps, gray/neutral for data artifacts (CSVs, SAFE folders, outputs), amber for the YAML orchestration layer, and purple for the SCL/datacube components.  
+**Dashed arrows**: used for two relationships that are optional or indirect: the SCL polygon clip path (only when use_scl=True), and the Step 5 orchestration edges back to Steps 1–4 (since the YAML config drives the others rather than receiving data from them).
+
 ---
 
 ## Installation
