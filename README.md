@@ -6,6 +6,31 @@ Python package and scripts to match Sentinel-2 satellite imagery with in situ wa
 
 ![](./Workflow.png)
 
+**Color coding**: teal for the five pipeline steps, gray/neutral for data artifacts (CSVs, SAFE folders, outputs), amber for the YAML orchestration layer, and purple for the SCL/datacube components.  
+**Dashed arrows**: used for two relationships that are optional or indirect: the SCL polygon clip path (only when use_scl=True), and the Step 5 orchestration edges back to Steps 1–4 (since the YAML config drives the others rather than receiving data from them).
+
+---
+
+## Installation
+
+**Requirements:** Python ≥ 3.12
+
+Clone the repository and install dependencies with [Poetry](https://python-poetry.org/):
+
+```bash
+git clone https://github.com/your-org/rionegromatchup.git
+cd rionegromatchup
+poetry install
+```
+
+Or with pip (using the lock file for reproducibility):
+
+```bash
+pip install .
+```
+
+> `pyyaml` is required for the pipeline config system. It is included in the project dependencies.
+
 ---
 
 ## Environment Setup
@@ -105,7 +130,52 @@ result = cfg.with_scl_polygon(
 
 ---
 
-## Batch Processing
+### Step 5 — Run the full pipeline from a YAML config
+
+The pipeline can also be driven entirely from a single YAML file — one file per campaign, version-controlled alongside your data.
+
+**Generate a template:**
+
+```bash
+python -m rionegromatchup.pipeline_config --generate campaign_2025.yaml
+```
+
+The generated file includes every parameter at its default value, with inline comments documenting units and valid options. Edit it for your campaign, then run:
+
+```bash
+python -m rionegromatchup.pipeline_config --run campaign_2025.yaml
+```
+
+Individual steps can be disabled by setting `enabled: false`:
+
+```yaml
+insitu:
+  enabled: false   # skip — already prepared
+
+sentinel:
+  enabled: true
+  time_delta_days: 2
+  cloud_cover_max: 20
+
+acolite:
+  enabled: true
+  acolite_executable: /path/to/acolite/acolite.py
+  scl:
+    use_scl: true
+    min_area_m2: 5000
+```
+
+**Dry-run** (validate config and log steps without executing):
+
+```bash
+python -m rionegromatchup.pipeline_config --run campaign_2025.yaml --dry-run
+```
+
+---
+
+## Programmatic usage
+
+For scripting and integration into custom workflows, all pipeline steps can be called directly without a config file.
 
 ```bash
 # Step 1 — prepare in situ data
