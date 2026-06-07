@@ -151,6 +151,179 @@ class AcoliteSection:
     scl: SclSection = field(default_factory=SclSection)
 
 
+# ---------------------------------------------------------------------------
+# Tile configuration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TileEntry:
+    """
+    Spatial restriction for a single Sentinel-2 MGRS tile.
+
+    Exactly one of ``polygon`` or ``limit`` may be set.  If neither is
+    set the tile is processed without any spatial restriction (full scene).
+    Setting both is a configuration error and raises ``ValueError`` on
+    ``validate()``.
+
+    Attributes
+    ----------
+    polygon:
+        Path to a GeoJSON or WKT file defining the tile's region of
+        interest.  Takes precedence over ``limit`` at runtime.
+    limit:
+        Bounding box as ``[south, west, north, east]`` in decimal
+        degrees.  Used when ``polygon`` is not set.
+    """
+
+    polygon: Optional[str] = None
+    limit: Optional[list[float]] = None
+
+    def validate(self, tile_id: str = "") -> None:
+        """
+        Validate the tile entry.
+
+        Raises
+        ------
+        ValueError
+            If both ``polygon`` and ``limit`` are set, or if ``limit``
+            does not contain exactly four values.
+        """
+        context = f" (tile {tile_id!r})" if tile_id else ""
+
+        if self.polygon is not None and self.limit is not None:
+            raise ValueError(
+                f"TileEntry{context}: specify either 'polygon' or 'limit', not both."
+            )
+
+        if self.limit is not None:
+            if len(self.limit) != 4:
+                raise ValueError(
+                    f"TileEntry{context}: 'limit' must contain exactly 4 values "
+                    f"[south, west, north, east], got {len(self.limit)}."
+                )
+            s, w, n, e = self.limit
+            if s >= n:
+                raise ValueError(
+                    f"TileEntry{context}: limit south ({s}) must be < north ({n})."
+                )
+            if w >= e:
+                raise ValueError(
+                    f"TileEntry{context}: limit west ({w}) must be < east ({e})."
+                )
+            if not (-90 <= s <= 90 and -90 <= n <= 90):
+                raise ValueError(
+                    f"TileEntry{context}: latitude values must be in [-90, 90]."
+                )
+            if not (-180 <= w <= 180 and -180 <= e <= 180):
+                raise ValueError(
+                    f"TileEntry{context}: longitude values must be in [-180, 180]."
+                )
+
+
+@dataclass
+class TilesSection:
+    """
+    Per-tile spatial restrictions, keyed by 5-character MGRS tile code.
+
+    Each entry is a ``TileEntry`` that optionally defines a ``polygon``
+    or ``limit`` for that tile.  Tiles not listed here are processed
+    without any spatial restriction.
+
+    Example YAML::
+
+        tiles:
+          21HUD:
+            polygon: data/polygons/21HUD.geojson
+          21HVD:
+            limit: [-34.2, -56.8, -33.0, -55.1]
+          21HWD:
+            # no restriction — full scene
+    """
+
+    entries: dict[str, TileEntry] = field(default_factory=dict)
+
+    def get(self, tile_id: str) -> Optional[TileEntry]:
+        """
+        Return the ``TileEntry`` for *tile_id*, or ``None`` if not configured.
+
+        Parameters
+        ----------
+        tile_id:
+            5-character MGRS tile code (e.g. ``'21HUD'``).
+
+        Returns
+        -------
+        TileEntry or None
+        """
+        return self.entries.get(tile_id)
+
+    def validate(self) -> None:
+        """
+        Validate all tile entries.
+
+        Raises
+        ------
+        ValueError
+            If any ``TileEntry`` fails its own validation.
+        """
+        for tile_id, entry in self.entries.items():
+            entry.validate(tile_id=tile_id)
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "TilesSection":
+        """
+        Parse a raw dict (from YAML) into a ``TilesSection``.
+
+        Each key is a tile ID string; each value is a dict with optional
+        ``polygon`` and/or ``limit`` keys.  Unknown keys within a tile
+        entry raise ``ValueError``.
+
+        Parameters
+        ----------
+        raw:
+            Dict mapping tile ID strings to tile entry dicts.
+
+        Returns
+        -------
+        TilesSection
+
+        Raises
+        ------
+        ValueError
+            If any tile entry contains unknown keys or fails validation.
+        """
+        entries: dict[str, TileEntry] = {}
+        known_tile_keys = {f.name for f in fields(TileEntry)}
+
+        for tile_id, tile_raw in raw.items():
+            # Allow empty / null tile entries (no restriction)
+            if tile_raw is None:
+                entries[tile_id] = TileEntry()
+                continue
+
+            unknown = set(tile_raw.keys()) - known_tile_keys
+            if unknown:
+                raise ValueError(
+                    f"Unknown key(s) in tiles.{tile_id}: {sorted(unknown)}. "
+                    f"Valid keys: {sorted(known_tile_keys)}"
+                )
+
+            entry = TileEntry(
+                polygon=tile_raw.get("polygon"),
+                limit=tile_raw.get("limit"),
+            )
+            entry.validate(tile_id=tile_id)
+            entries[tile_id] = entry
+
+        return cls(entries=entries)
+
+
+# ---------------------------------------------------------------------------
+# Master config
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class PipelineConfig:
     """Master pipeline configuration for Río Negro Matchup."""
@@ -162,6 +335,7 @@ class PipelineConfig:
     sentinel: SentinelSection = field(default_factory=SentinelSection)
     download: DownloadSection = field(default_factory=DownloadSection)
     acolite: AcoliteSection = field(default_factory=AcoliteSection)
+    tiles: TilesSection = field(default_factory=TilesSection)
 
     # ---------------------------------------------------------------------------
     # Template generation
@@ -269,11 +443,6 @@ acolite:
     safe_dir: data/sentinel_downloads   # Directory containing .SAFE folders
     scl_dir: data/sentinel_downloads/scl  # Directory containing SCL GeoTIFFs
 
-    # Optional geographic bounding box [S, W, N, E] in decimal degrees.
-    # Leave null to process the full scene.
-    # Example: [-33.25, -58.45, -33.17, -58.33]
-    limit: null
-
   # --- Radiometric correction ---
   radcor:
     # Atmospheric correction processor: dsf | exp | tact
@@ -349,6 +518,27 @@ acolite:
     min_area_m2: 5000.0             # Minimum water polygon area (m²)
     simplify_tolerance: 20.0        # Douglas-Peucker tolerance (m, ~1 pixel)
     buffer_m: 0.0                   # Outward buffer around water mask (m)
+
+# =============================================================================
+# Tile spatial restrictions
+# =============================================================================
+# Per-tile bounding boxes or polygon paths, keyed by 5-character MGRS tile
+# code.  For each tile, specify either 'polygon' OR 'limit' (not both), or
+# omit the tile entirely to process the full scene.
+#
+# polygon: path to a GeoJSON or WKT file defining the region of interest.
+#          Takes precedence over 'limit' at runtime.
+# limit:   bounding box as [south, west, north, east] in decimal degrees.
+#
+# Example:
+#   21HUD:
+#     polygon: data/polygons/21HUD.geojson
+#   21HVD:
+#     limit: [-34.2, -56.8, -33.0, -55.1]
+#   21HWD:
+#     # no entry — full scene processed
+# =============================================================================
+tiles: {}
 """
         output_path.write_text(template)
         logger.info(f"Pipeline template written to {output_path}")
@@ -408,6 +598,7 @@ acolite:
         sentinel_raw = raw.get("sentinel", {})
         download_raw = raw.get("download", {})
         acolite_raw = raw.get("acolite", {})
+        tiles_raw = raw.get("tiles", {})
 
         _check_keys(insitu_raw, InsituSection, context="insitu")
         _check_keys(sentinel_raw, SentinelSection, context="sentinel")
@@ -449,6 +640,9 @@ acolite:
             scl=SclSection(**scl_raw),
         )
 
+        # tiles_raw may be None (YAML `tiles:` with no value) or a dict
+        tiles = TilesSection.from_dict(tiles_raw or {})
+
         return cls(
             campaign_name=raw.get("campaign_name", "rio_negro_2025"),
             description=raw.get("description", ""),
@@ -456,6 +650,7 @@ acolite:
             sentinel=SentinelSection(**sentinel_raw),
             download=DownloadSection(**download_raw),
             acolite=acolite,
+            tiles=tiles,
         )
 
     # ---------------------------------------------------------------------------
@@ -546,6 +741,25 @@ acolite:
             output_format=output_format,
         )
         return cfg
+
+    def to_tile_config(self) -> TilesSection:
+        """
+        Return the ``TilesSection`` for use in ``run_batch``.
+
+        This is a thin accessor kept for symmetry with the other
+        ``to_*`` converters (``to_acolite_config``, ``to_scl_kwargs``,
+        ``to_insitu_args``, ``to_sentinel_args``).  Callers that need
+        to pass tile spatial restrictions to ``run_batch`` or
+        ``from_campaigns_row`` should use this rather than accessing
+        ``self.tiles`` directly.
+
+        Returns
+        -------
+        TilesSection
+            The tile spatial restrictions defined in this config.
+            Returns an empty ``TilesSection`` when no tiles are configured.
+        """
+        return self.tiles
 
     def to_scl_kwargs(self) -> dict:
         """
@@ -792,6 +1006,7 @@ acolite:
             scl_dir=scl_dir if self.acolite.scl.use_scl else None,
             scl_kwargs=self.to_scl_kwargs(),
             continue_on_error=self.acolite.continue_on_error,
+            tile_config=self.to_tile_config(),
         )
         return results
 
@@ -807,6 +1022,7 @@ _KNOWN_TOP_LEVEL = {
     "sentinel",
     "download",
     "acolite",
+    "tiles",
 }
 
 

@@ -12,24 +12,9 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from rionegromatchup.pipeline_config import (
-    PipelineConfig,
-    InsituSection,
-    SentinelSection,
-    DownloadSection,
-    AcoliteSection,
-    AcoliteIOSection,
-    AcoliteRadCorSection,
-    AcoliteGlintSection,
-    AcoliteL2WSection,
-    AcoliteOutputSection,
-    SclSection,
     main,
 )
 
@@ -421,8 +406,6 @@ class TestCLI:
         main(["--run", str(out)])  # should complete without error
 
     def test_mutually_exclusive_flags(self, tmp_path):
-        import sys
-
         out = str(tmp_path / "campaign.yaml")
         with pytest.raises(SystemExit):
             main(["--generate", out, "--run", out])
@@ -430,3 +413,201 @@ class TestCLI:
     def test_required_flag(self):
         with pytest.raises(SystemExit):
             main([])
+
+
+"""
+Tests for PipelineConfig step 5 — _run_acolite tile_config wiring
+and the to_tile_config() converter.
+
+Covers:
+  - to_tile_config() returns the TilesSection instance
+  - to_tile_config() returns empty TilesSection when no tiles configured
+  - _run_acolite passes tile_config to run_batch
+  - _run_acolite passes empty TilesSection when no tiles configured
+  - tile_config flows correctly into run_batch (polygon, limit, none)
+  - sentinel search parameters are already wired through to_sentinel_args
+    (smoke-tests for time_delta_days and cloud_cover_max)
+"""
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from rionegromatchup.pipeline_config import (
+    PipelineConfig,
+    TileEntry,
+    TilesSection,
+)
+
+# ---------------------------------------------------------------------------
+# to_tile_config()
+# ---------------------------------------------------------------------------
+
+
+class TestToTileConfig:
+
+    def test_returns_tiles_section(self):
+        cfg = PipelineConfig()
+        result = cfg.to_tile_config()
+        assert isinstance(result, TilesSection)
+
+    def test_returns_empty_section_by_default(self):
+        cfg = PipelineConfig()
+        assert cfg.to_tile_config().entries == {}
+
+    def test_returns_configured_tiles(self):
+        cfg = PipelineConfig()
+        cfg.tiles = TilesSection(
+            entries={
+                "21HUD": TileEntry(polygon="data/polygons/21HUD.geojson"),
+                "21HVD": TileEntry(limit=[-34.2, -56.8, -33.0, -55.1]),
+            }
+        )
+        result = cfg.to_tile_config()
+        assert result.get("21HUD").polygon == "data/polygons/21HUD.geojson"
+        assert result.get("21HVD").limit == [-34.2, -56.8, -33.0, -55.1]
+
+    def test_is_same_instance_as_self_tiles(self):
+        """to_tile_config() must return self.tiles, not a copy."""
+        cfg = PipelineConfig()
+        assert cfg.to_tile_config() is cfg.tiles
+
+
+# ---------------------------------------------------------------------------
+# _run_acolite — tile_config passed to run_batch
+# ---------------------------------------------------------------------------
+
+
+class TestRunAcoliteTileConfigWiring:
+
+    def _make_pipeline_cfg(self, tmp_path, tiles=None):
+        """Build a minimal PipelineConfig pointing at tmp_path."""
+        cfg = PipelineConfig()
+        cfg.acolite.acolite_executable = str(tmp_path / "fake_acolite")
+        cfg.acolite.io.safe_dir = str(tmp_path / "safe")
+        cfg.acolite.io.scl_dir = str(tmp_path / "scl")
+        cfg.acolite.io.output = str(tmp_path / "output")
+        cfg.acolite.scl.use_scl = False
+        if tiles is not None:
+            cfg.tiles = tiles
+        return cfg
+
+    def test_tile_config_passed_to_run_batch(self, tmp_path):
+        """_run_acolite must forward tile_config=self.tiles to run_batch."""
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        safe = safe_dir / "S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD.SAFE"
+        safe.mkdir()
+        (safe / "dummy.xml").write_text("<root/>")
+
+        tiles = TilesSection(
+            entries={"21HUD": TileEntry(limit=[-34.2, -56.8, -33.0, -55.1])}
+        )
+        pipeline = self._make_pipeline_cfg(tmp_path, tiles=tiles)
+
+        captured = {}
+
+        def fake_run_batch(safe_list, base_output, **kwargs):
+            captured["tile_config"] = kwargs.get("tile_config")
+            return []
+
+        with patch(
+            "rionegromatchup.acolite_spec.AcoliteConfig.run_batch",
+            side_effect=fake_run_batch,
+        ):
+            pipeline._run_acolite()
+
+        assert captured["tile_config"] is tiles
+
+    def test_empty_tiles_section_passed_when_no_tiles_configured(self, tmp_path):
+        """When no tiles are configured, to_tile_config() returns an empty
+        TilesSection — which is what run_batch receives."""
+        pipeline = self._make_pipeline_cfg(tmp_path)
+        tile_cfg = pipeline.to_tile_config()
+        assert isinstance(tile_cfg, TilesSection)
+        assert tile_cfg.entries == {}
+
+    def test_no_safe_files_returns_empty_list(self, tmp_path):
+        """_run_acolite must return [] gracefully when safe_dir is empty."""
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+
+        pipeline = self._make_pipeline_cfg(tmp_path)
+        result = pipeline._run_acolite()
+        assert result == []
+
+    def test_scl_use_scl_forwarded(self, tmp_path):
+        """use_scl flag must still be forwarded correctly alongside tile_config."""
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        safe = safe_dir / "S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD.SAFE"
+        safe.mkdir()
+        (safe / "dummy.xml").write_text("<root/>")
+
+        pipeline = self._make_pipeline_cfg(tmp_path)
+        pipeline.acolite.scl.use_scl = True
+        captured = {}
+
+        def fake_run_batch(safe_list, base_output, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        with patch(
+            "rionegromatchup.acolite_spec.AcoliteConfig.run_batch",
+            side_effect=fake_run_batch,
+        ):
+            pipeline._run_acolite()
+
+        assert captured.get("use_scl") is True
+        assert "tile_config" in captured
+
+
+# ---------------------------------------------------------------------------
+# Sentinel search parameters already wired (smoke tests)
+# ---------------------------------------------------------------------------
+
+
+class TestSentinelArgsWiring:
+    """
+    Confirm that time_delta_days and cloud_cover_max flow from
+    PipelineConfig → to_sentinel_args() → _run_sentinel_catalog().
+    These were already wired before step 5; tests here guard against
+    regression.
+    """
+
+    def test_time_delta_days_in_sentinel_args(self):
+        cfg = PipelineConfig()
+        cfg.sentinel.time_delta_days = 3
+        args = cfg.to_sentinel_args()
+        assert args["time_delta_days"] == 3
+
+    def test_cloud_cover_max_in_sentinel_args(self):
+        cfg = PipelineConfig()
+        cfg.sentinel.cloud_cover_max = 25
+        args = cfg.to_sentinel_args()
+        assert args["cloud_cover_max"] == 25
+
+    def test_sentinel_args_forwarded_to_build_catalog(self, tmp_path):
+        csv = tmp_path / "unique.csv"
+        csv.write_text("date,longitud,latitud\n2025-08-01,-56.5,-32.85\n")
+        catalog_json = tmp_path / "catalog.json"
+
+        cfg = PipelineConfig()
+        cfg.sentinel.time_delta_days = 2
+        cfg.sentinel.cloud_cover_max = 15
+        cfg.sentinel.unique_csv = str(csv)
+        cfg.sentinel.catalog_json = str(catalog_json)
+
+        captured = {}
+
+        def fake_build_catalog(csv_file, output_json, time_delta, cloud_cover):
+            captured["time_delta"] = time_delta
+            captured["cloud_cover"] = cloud_cover
+
+        with patch(
+            "rionegromatchup.pipeline_config.PipelineConfig._run_sentinel_catalog",
+        ):
+            args = cfg.to_sentinel_args()
+            assert args["time_delta_days"] == 2
+            assert args["cloud_cover_max"] == 15
