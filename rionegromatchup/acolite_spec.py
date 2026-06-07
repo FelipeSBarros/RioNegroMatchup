@@ -525,8 +525,61 @@ class AcoliteConfig:
         use_scl=False,
         scl_dir=None,
         scl_kwargs=None,
+        tile_config=None,
     ) -> list[dict]:
+        """
+        Run ACOLITE for each SAFE folder in safe_list.
+
+        Spatial restriction precedence (per scene)
+        -------------------------------------------
+        1. Static **polygon** from ``tile_config`` — highest priority.
+           SCL clipping is suppressed for this tile; the static polygon
+           already defines the water boundary precisely.
+        2. **SCL-derived polygon** (``use_scl=True``) — applied only when
+           the tile has no static polygon in ``tile_config``.
+        3. Static **limit** from ``tile_config`` — applied when no polygon
+           from either source is used.
+        4. **No restriction** — full scene processed when the tile is not
+           listed in ``tile_config`` and ``use_scl`` did not produce a
+           polygon.
+
+        Parameters
+        ----------
+        safe_list:
+            List of paths to Sentinel-2 SAFE folders.
+        base_output:
+            Parent output directory; per-image subdirectories are created
+            automatically: ``<base_output>/<SAFE_stem>/``.
+        dry_run:
+            If True, log commands without executing.
+        continue_on_error:
+            If True (default), log errors and continue on failure.
+        use_scl:
+            If True, automatically resolve the SCL file for each scene,
+            extract water polygons, and apply polygon clipping.
+            Suppressed for tiles that have a static polygon in
+            ``tile_config``.  Requires ``scl_dir`` to be set.
+        scl_dir:
+            Directory containing SCL GeoTIFF files (typically
+            ``{output_dir}/scl/``).  Required when ``use_scl=True``.
+        scl_kwargs:
+            Optional dict of keyword arguments forwarded to
+            ``with_scl_polygon()`` / ``scl_water_to_geojson()``.
+        tile_config:
+            Optional ``TilesSection`` instance.  When provided, each
+            scene's tile ID is extracted from the SAFE filename and
+            looked up to resolve a static polygon or bounding-box limit.
+
+        Returns
+        -------
+        list[dict]
+            One result dict per image.  Each dict includes:
+            - ``scl_used`` (bool): whether SCL polygon clipping was applied
+            - ``tile_restriction`` (str): ``'polygon'``, ``'limit'``,
+              or ``'none'`` — the spatial restriction that was applied
+        """
         from rionegromatchup.scl_water import resolve_scl_path
+        from rionegromatchup.sentinel_data import _tile_from_scene_id
 
         if not Path(self.acolite_executable).expanduser().exists():
             raise FileNotFoundError(
@@ -564,6 +617,7 @@ class AcoliteConfig:
                         "output_dir": None,
                         "skipped": True,
                         "scl_used": False,
+                        "tile_restriction": "none",
                     }
                 )
                 continue
@@ -571,18 +625,59 @@ class AcoliteConfig:
             image_output = base_output / stem
             image_output.mkdir(parents=True, exist_ok=True)
 
+            # --- Resolve tile spatial restriction ---
+            # Done before the per-scene io reset so the reset can include
+            # the tile's limit (polygon is applied after, below).
+            tile_polygon = None
+            tile_limit = None
+            tile_restriction = "none"
+
+            if tile_config is not None:
+                tile_id = _tile_from_scene_id(stem)
+                if tile_id is not None:
+                    entry = tile_config.get(tile_id)
+                    if entry is not None:
+                        if entry.polygon is not None:
+                            tile_polygon = entry.polygon
+                            tile_restriction = "polygon"
+                            logger.info(
+                                f"  Tile {tile_id}: static polygon → "
+                                f"{entry.polygon}"
+                            )
+                        elif entry.limit is not None:
+                            tile_limit = tuple(entry.limit)
+                            tile_restriction = "limit"
+                            logger.info(f"  Tile {tile_id}: limit → {entry.limit}")
+                        else:
+                            logger.info(
+                                f"  Tile {tile_id}: no restriction configured "
+                                "— full scene."
+                            )
+                    else:
+                        logger.info(
+                            f"  Tile {tile_id}: not listed in tile_config "
+                            "— full scene."
+                        )
+                else:
+                    logger.warning(
+                        f"  Could not extract tile ID from {stem} — "
+                        "processing full scene."
+                    )
+
             original_io = self.io
             self.io = replace(
                 self.io,
                 inputfile=str(safe_path),
                 output=str(image_output),
-                polygon=None,
-                polygon_clip=False,
+                limit=tile_limit,
+                polygon=tile_polygon,
+                polygon_clip=tile_polygon is not None,
             )
 
             scl_used = False
             try:
-                if use_scl:
+                # --- SCL clipping (suppressed when static polygon is set) ---
+                if use_scl and tile_polygon is None:
                     scl_path = resolve_scl_path(safe_path, scl_dir)
                     if scl_path is None:
                         logger.warning(
@@ -598,6 +693,7 @@ class AcoliteConfig:
                             )
                             self.io = patched.io
                             scl_used = True
+                            tile_restriction = "polygon"
                             logger.info(
                                 f"  SCL polygon clipping enabled: {scl_path.name}"
                             )
@@ -606,6 +702,11 @@ class AcoliteConfig:
                                 f"  SCL extraction failed for {stem}: {e} — "
                                 "processing without polygon clipping."
                             )
+                elif use_scl and tile_polygon is not None:
+                    logger.info(
+                        f"  SCL clipping suppressed for {stem} — "
+                        "static tile polygon takes precedence."
+                    )
 
                 try:
                     self.io.validate()
@@ -622,6 +723,7 @@ class AcoliteConfig:
                             "output_dir": image_output,
                             "skipped": False,
                             "scl_used": scl_used,
+                            "tile_restriction": tile_restriction,
                         }
                     )
                     if not continue_on_error:
@@ -644,6 +746,7 @@ class AcoliteConfig:
                             "output_dir": image_output,
                             "skipped": False,
                             "scl_used": scl_used,
+                            "tile_restriction": tile_restriction,
                         }
                     )
                     continue
@@ -651,6 +754,7 @@ class AcoliteConfig:
                 result = self._execute(settings_path)
                 result["skipped"] = False
                 result["scl_used"] = scl_used
+                result["tile_restriction"] = tile_restriction
                 results.append(result)
 
                 if result["returncode"] != 0 and not continue_on_error:
