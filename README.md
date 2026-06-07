@@ -130,7 +130,7 @@ result = cfg.with_scl_polygon(
 
 ---
 
-### Step 5 — Run the full pipeline from a YAML config
+## Run the full pipeline from a YAML config
 
 The pipeline can also be driven entirely from a single YAML file — one file per campaign, version-controlled alongside your data.
 
@@ -163,6 +163,12 @@ acolite:
   scl:
     use_scl: true
     min_area_m2: 5000
+
+tiles:
+  21HUD:
+    polygon: data/polygons/21HUD.geojson
+  21HVD:
+    limit: [-34.2, -56.8, -33.0, -55.1]
 ```
 
 **Dry-run** (validate config and log steps without executing):
@@ -170,6 +176,31 @@ acolite:
 ```bash
 python -m rionegromatchup.pipeline_config --run campaign_2025.yaml --dry-run
 ```
+
+### Per-tile spatial restrictions
+
+The `tiles:` section of the config lets you define a spatial restriction for each Sentinel-2 MGRS tile, so the same boundary is applied consistently across every scene processed for that tile — no need to specify it on each run.
+
+For each tile, set either `polygon` (a GeoJSON or WKT file path) or `limit` (a `[south, west, north, east]` bounding box in decimal degrees), or omit the tile entirely to process the full scene.
+
+```yaml
+tiles:
+  21HUD:
+    polygon: data/polygons/21HUD.geojson   # hand-drawn or pre-processed boundary
+  21HVD:
+    limit: [-34.2, -56.8, -33.0, -55.1]   # bounding box [S, W, N, E]
+  21HWD:
+    # no entry — full scene processed
+```
+
+The restriction is resolved per scene during atmospheric correction following this precedence order:
+
+1. **Static polygon** from `tiles:` — highest priority. If a tile has a polygon configured, it is applied directly to ACOLITE and SCL-based clipping (`use_scl`) is suppressed for that tile, since the static polygon already defines the water boundary precisely.
+2. **SCL-derived polygon** (`use_scl: true`) — used when the tile has no static polygon. A water mask is extracted from the SCL asset and applied as the processing boundary.
+3. **Static limit** from `tiles:` — applied when no polygon is available from either source above.
+4. **No restriction** — full scene is processed when the tile is not listed in `tiles:` and SCL clipping is disabled or unavailable.
+
+> The tile ID is extracted automatically from the SAFE folder filename (e.g. `T21HUD` in `S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD_...SAFE`), so no manual mapping between files and tiles is needed.
 
 ---
 
@@ -195,6 +226,7 @@ python rionegromatchup/sentinel_data.py --mode download \
 ```python
 from pathlib import Path
 from rionegromatchup.acolite_spec import AcoliteConfig, IOConfig
+from rionegromatchup.pipeline_config import TilesSection, TileEntry
 
 cfg = AcoliteConfig(
     acolite_executable="/path/to/acolite",
@@ -204,12 +236,42 @@ cfg = AcoliteConfig(
 safe_list = sorted(Path("data/sentinel_downloads").glob("*.SAFE"))
 scl_dir = Path("data/sentinel_downloads/scl")
 
+# Define per-tile spatial restrictions
+tiles = TilesSection.from_dict({
+    "21HUD": {"polygon": "data/polygons/21HUD.geojson"},
+    "21HVD": {"limit": [-34.2, -56.8, -33.0, -55.1]},
+})
+
 results = cfg.run_batch(
     safe_list=safe_list,
     base_output="data/acolite_output",
     use_scl=True,
     scl_dir=scl_dir,
     scl_kwargs={"min_area_m2": 5000},
+    tile_config=tiles,
     continue_on_error=True,
 )
 ```
+
+You can also resolve tile restrictions per row when building configs from campaign data:
+
+```python
+from rionegromatchup.acolite_spec import AcoliteConfig
+from rionegromatchup.pipeline_config import TilesSection
+
+tiles = TilesSection.from_dict({
+    "21HUD": {"polygon": "data/polygons/21HUD.geojson"},
+    "21HVD": {"limit": [-34.2, -56.8, -33.0, -55.1]},
+})
+
+# row is a pandas Series from campaigns_unique_data.csv
+cfg = AcoliteConfig.from_campaigns_row(
+    row=row,
+    acolite_executable="/path/to/acolite",
+    base_output="data/acolite_output",
+    inputfile=str(safe_path),
+    tile_config=tiles,
+)
+```
+
+The spatial restriction is resolved automatically from `row["s2_tile"]`. If `tile_config` is omitted, the original behaviour applies: a 0.1° bounding box is derived from the row's `latitud`/`longitud` coordinates.
