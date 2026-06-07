@@ -993,7 +993,7 @@ tiles: {}
         safe_dir = Path(self.acolite.io.safe_dir)
         scl_dir = Path(self.acolite.io.scl_dir)
 
-        safe_list = sorted(safe_dir.glob("*.SAFE"))
+        safe_list = sorted(safe_dir.rglob("*.SAFE"))
         if not safe_list:
             logger.warning(f"  No .SAFE folders found in {safe_dir}")
             return []
