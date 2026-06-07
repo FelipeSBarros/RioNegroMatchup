@@ -742,6 +742,25 @@ tiles: {}
         )
         return cfg
 
+    def to_tile_config(self) -> TilesSection:
+        """
+        Return the ``TilesSection`` for use in ``run_batch``.
+
+        This is a thin accessor kept for symmetry with the other
+        ``to_*`` converters (``to_acolite_config``, ``to_scl_kwargs``,
+        ``to_insitu_args``, ``to_sentinel_args``).  Callers that need
+        to pass tile spatial restrictions to ``run_batch`` or
+        ``from_campaigns_row`` should use this rather than accessing
+        ``self.tiles`` directly.
+
+        Returns
+        -------
+        TilesSection
+            The tile spatial restrictions defined in this config.
+            Returns an empty ``TilesSection`` when no tiles are configured.
+        """
+        return self.tiles
+
     def to_scl_kwargs(self) -> dict:
         """
         Return keyword arguments for SCL water extraction functions.
@@ -987,6 +1006,7 @@ tiles: {}
             scl_dir=scl_dir if self.acolite.scl.use_scl else None,
             scl_kwargs=self.to_scl_kwargs(),
             continue_on_error=self.acolite.continue_on_error,
+            tile_config=self.to_tile_config(),
         )
         return results
 
