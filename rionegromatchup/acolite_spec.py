@@ -7,6 +7,8 @@ and water quality (L2W) product generation.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import logging
 import subprocess
 from dataclasses import dataclass, field
@@ -346,6 +348,128 @@ def convert_l2w_to_zarr_cog(
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
+
+"""
+Processing status helpers for acolite_spec.py
+==============================================
+"""
+
+
+if TYPE_CHECKING:
+    # Avoid circular import at runtime; AcoliteConfig is defined later
+    # in the same file.  At type-check time we can reference it normally.
+    from rionegromatchup.acolite_spec import AcoliteConfig
+
+
+def expected_outputs(
+    output_dir: Path | str,
+    acolite_cfg: "AcoliteConfig",
+) -> dict[str, Path | None]:
+    """
+    Return the output files that should exist if a scene was fully processed.
+
+    Each key maps to the *first* matching file found in ``output_dir``, or
+    ``None`` if no match exists (whether because the stage is disabled or the
+    file simply hasn't been produced yet).
+
+    Stages and their terminal-product glob patterns
+    -----------------------------------------------
+    ``l1r``
+        ``*_L1R.nc`` — radiometric conversion, always runs.
+    ``l2r``
+        ``*_L2R.nc`` — atmospheric correction, always runs.
+    ``l2w``
+        ``*_L2W.nc`` — water quality parameters.  Only expected when
+        ``acolite_cfg.l2w.l2w_parameters`` is non-empty (i.e. L2W is
+        enabled).  Set to ``None`` when the stage is disabled.
+
+    Parameters
+    ----------
+    output_dir:
+        The per-scene output directory (e.g.
+        ``<base_output>/<SAFE_stem>/``).
+    acolite_cfg:
+        The ``AcoliteConfig`` instance for this scene.
+
+    Returns
+    -------
+    dict[str, Path | None]
+        Keys: ``"l1r"``, ``"l2r"``, ``"l2w"``.
+        Values: first matching ``Path`` found in *output_dir*, or ``None``.
+
+    Examples
+    --------
+    >>> cfg = AcoliteConfig(acolite_executable="...", ...)
+    >>> outputs = expected_outputs(Path("data/acolite_output/scene_stem"), cfg)
+    >>> outputs
+    {'l1r': PosixPath('.../*_L1R.nc'), 'l2r': PosixPath('.../*_L2R.nc'),
+     'l2w': PosixPath('.../*_L2W.nc')}
+    """
+    output_dir = Path(output_dir)
+    l2w_enabled = bool(acolite_cfg.l2w.l2w_parameters)
+
+    def _first(pattern: str) -> Path | None:
+        matches = sorted(output_dir.glob(pattern))
+        return matches[0] if matches else None
+
+    return {
+        "l1r": _first("*_L1R.nc"),
+        "l2r": _first("*_L2R.nc"),
+        "l2w": _first("*_L2W.nc") if l2w_enabled else None,
+    }
+
+
+def is_scene_processed(
+    output_dir: Path | str,
+    acolite_cfg: "AcoliteConfig",
+) -> bool:
+    """
+    Return ``True`` if all enabled ACOLITE stages have completed output files.
+
+    Uses :func:`expected_outputs` to determine which stages are expected and
+    whether their output files are present.  A stage is considered complete
+    when its entry in ``expected_outputs`` is not ``None`` (i.e. a matching
+    file was found on disk).
+
+    A disabled stage (e.g. L2W with an empty ``l2w_parameters`` list) is
+    excluded from the check — its absence does not cause the function to
+    return ``False``.
+
+    Parameters
+    ----------
+    output_dir:
+        The per-scene output directory.
+    acolite_cfg:
+        The ``AcoliteConfig`` instance for this scene.
+
+    Returns
+    -------
+    bool
+        ``True`` if every enabled stage has a matching output file.
+        ``False`` if the directory does not exist, is empty, or any enabled
+        stage is missing its expected output.
+
+    Examples
+    --------
+    >>> is_scene_processed(Path("data/acolite_output/scene_stem"), cfg)
+    True
+    """
+    output_dir = Path(output_dir)
+    if not output_dir.exists():
+        return False
+
+    l2w_enabled = bool(acolite_cfg.l2w.l2w_parameters)
+    outputs = expected_outputs(output_dir, acolite_cfg)
+
+    # L1R and L2R are always required
+    if outputs["l1r"] is None or outputs["l2r"] is None:
+        return False
+
+    # L2W is required only when the stage is enabled
+    if l2w_enabled and outputs["l2w"] is None:
+        return False
+
+    return True
 
 
 @dataclass
