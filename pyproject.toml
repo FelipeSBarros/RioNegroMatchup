@@ -5,8 +5,8 @@ description = "Python package and script to validate, model water quality parame
 authors = ["Felipe Sodré <felipe.b4rros@gmail.com>"]
 readme = "README.md"
 license = "MIT"
-homepage = "https://github.com/rionegromatchup"
-repository = "https://github.com/rionegromatchup"
+homepage = "https://github.com/FelipeSBarros/aquamatch"
+repository = "https://github.com/FelipeSBarros/aquamatch"
 keywords = ["remote sensing", "water quality", "sentinel-2", "acolite"]
 classifiers = [
     "Topic :: Scientific/Engineering :: GIS",
