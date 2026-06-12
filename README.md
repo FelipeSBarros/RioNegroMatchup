@@ -177,6 +177,12 @@ tiles:
 python -m rionegromatchup.pipeline_config --run campaign_2025.yaml --dry-run
 ```
 
+**Force reprocess** (ignore existing outputs and reprocess all scenes):
+
+```bash
+python -m rionegromatchup.pipeline_config --run campaign_2025.yaml --force
+```
+
 ### Per-tile spatial restrictions
 
 The `tiles:` section of the config lets you define a spatial restriction for each Sentinel-2 MGRS tile, so the same boundary is applied consistently across every scene processed for that tile — no need to specify it on each run.
@@ -250,6 +256,7 @@ results = cfg.run_batch(
     scl_kwargs={"min_area_m2": 5000},
     tile_config=tiles,
     continue_on_error=True,
+    skip_existing=True,    # set False to reprocess all scenes
 )
 ```
 

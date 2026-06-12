@@ -1,9 +1,17 @@
 [tool.poetry]
-name = "rionegromatchup"
+name = "aquamatch"
 version = "0.1.0"
 description = "Python package and script to validate, model water quality parameters with remote sensing data"
 authors = ["Felipe Sodré <felipe.b4rros@gmail.com>"]
 readme = "README.md"
+license = "MIT"
+homepage = "https://github.com/rionegromatchup"
+repository = "https://github.com/rionegromatchup"
+keywords = ["remote sensing", "water quality", "sentinel-2", "acolite"]
+classifiers = [
+    "Topic :: Scientific/Engineering :: GIS",
+    "Intended Audience :: Science/Research",
+]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<4.0"
@@ -11,18 +19,17 @@ geopandas = "^1.1.1"
 pandas = "^2.3.3"
 boto3 = "^1.40.42"
 sentinelhub = "^3.11.2"
-dotenv = "^0.9.9"
+dotenv = "^0.9.9" # change to python-dotenv
 pystac-client = "^0.9.0"
 rasterio = "^1.4.3"
 shapely = "^2.1.2"
 requests = "^2.32.5"
 netcdf4 = "^1.7.4"
 zarr = "^3.2.1"
-xarray = "^2026.4.0"
+xarray = ">=2024.1.0"
 rioxarray = "^0.22.0"
 dask = "^2026.3.0"
 matplotlib = "^3.10.9"
-pytest = "^9.0.3"
 openpyxl = "^3.1.5"
 mgrs = "^1.5.4"
 
@@ -30,3 +37,6 @@ mgrs = "^1.5.4"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.0.3"
