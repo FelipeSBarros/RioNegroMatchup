@@ -650,6 +650,7 @@ class AcoliteConfig:
         scl_dir=None,
         scl_kwargs=None,
         tile_config=None,
+        skip_existing: bool = True,
     ) -> list[dict]:
         """
         Run ACOLITE for each SAFE folder in safe_list.
@@ -693,6 +694,12 @@ class AcoliteConfig:
             Optional ``TilesSection`` instance.  When provided, each
             scene's tile ID is extracted from the SAFE filename and
             looked up to resolve a static polygon or bounding-box limit.
+        skip_existing:
+            If ``True`` (default), scenes whose output directory already
+            contains all expected output files (as determined by
+            :func:`is_scene_processed`) are skipped without re-running
+            ACOLITE.  Set to ``False`` to reprocess all scenes regardless
+            of existing outputs.
 
         Returns
         -------
@@ -701,6 +708,8 @@ class AcoliteConfig:
             - ``scl_used`` (bool): whether SCL polygon clipping was applied
             - ``tile_restriction`` (str): ``'polygon'``, ``'limit'``,
               or ``'none'`` — the spatial restriction that was applied
+            - ``skipped_existing`` (bool): whether the scene was skipped
+              because its outputs were already present
         """
         from rionegromatchup.scl_water import resolve_scl_path
         from rionegromatchup.sentinel_data import _tile_from_scene_id
@@ -740,11 +749,35 @@ class AcoliteConfig:
                         "inputfile": str(safe_path),
                         "output_dir": None,
                         "skipped": True,
+                        "skipped_existing": False,
                         "scl_used": False,
                         "tile_restriction": "none",
                     }
                 )
                 continue
+            # --- Skip already-processed scenes ---
+            if skip_existing:
+                image_output_check = base_output / stem
+                if is_scene_processed(image_output_check, self):
+                    logger.info(
+                        f"  [{idx}/{total}] Already processed, skipping: {stem}"
+                    )
+                    results.append(
+                        {
+                            "returncode": None,
+                            "log_file": None,
+                            "l2w_file": None,
+                            "stdout": "",
+                            "stderr": "",
+                            "inputfile": str(safe_path),
+                            "output_dir": base_output / stem,
+                            "skipped": False,
+                            "skipped_existing": True,
+                            "scl_used": False,
+                            "tile_restriction": "none",
+                        }
+                    )
+                    continue
 
             image_output = base_output / stem
             image_output.mkdir(parents=True, exist_ok=True)
@@ -846,6 +879,7 @@ class AcoliteConfig:
                             "inputfile": str(safe_path),
                             "output_dir": image_output,
                             "skipped": False,
+                            "skipped_existing": False,
                             "scl_used": scl_used,
                             "tile_restriction": tile_restriction,
                         }
@@ -869,6 +903,7 @@ class AcoliteConfig:
                             "inputfile": str(safe_path),
                             "output_dir": image_output,
                             "skipped": False,
+                            "skipped_existing": False,
                             "scl_used": scl_used,
                             "tile_restriction": tile_restriction,
                         }
@@ -877,6 +912,7 @@ class AcoliteConfig:
 
                 result = self._execute(settings_path)
                 result["skipped"] = False
+                result["skipped_existing"] = False
                 result["scl_used"] = scl_used
                 result["tile_restriction"] = tile_restriction
                 results.append(result)
