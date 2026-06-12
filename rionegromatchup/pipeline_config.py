@@ -1075,6 +1075,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Log pipeline steps without executing them (only valid with --run).",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Reprocess all scenes, even those whose output files already exist. "
+            "Overrides skip_existing in the YAML config (only valid with --run)."
+        ),
+    )
     return parser
 
 
@@ -1092,6 +1101,8 @@ def main(argv=None) -> None:
 
     elif args.run:
         cfg = PipelineConfig.from_yaml(args.run)
+        if args.force:
+            cfg.acolite.skip_existing = False
         cfg.run(dry_run=args.dry_run)
 
 
