@@ -19,7 +19,6 @@ geopandas = "^1.1.1"
 pandas = "^2.3.3"
 boto3 = "^1.40.42"
 sentinelhub = "^3.11.2"
-dotenv = "^0.9.9" # change to python-dotenv
 pystac-client = "^0.9.0"
 rasterio = "^1.4.3"
 shapely = "^2.1.2"
@@ -32,6 +31,7 @@ dask = "^2026.3.0"
 matplotlib = "^3.10.9"
 openpyxl = "^3.1.5"
 mgrs = "^1.5.4"
+python-dotenv = "^1.2.2"
 
 
 [build-system]
