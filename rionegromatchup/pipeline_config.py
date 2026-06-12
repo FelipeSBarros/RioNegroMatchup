@@ -143,6 +143,7 @@ class AcoliteSection:
     acolite_executable: str = "/path/to/acolite/acolite.py"
     low_memory: bool = False
     continue_on_error: bool = True
+    skip_existing: bool = True
     io: AcoliteIOSection = field(default_factory=AcoliteIOSection)
     radcor: AcoliteRadCorSection = field(default_factory=AcoliteRadCorSection)
     glint: AcoliteGlintSection = field(default_factory=AcoliteGlintSection)
@@ -436,6 +437,7 @@ acolite:
   low_memory: false
 
   continue_on_error: true           # Keep processing remaining scenes on failure
+  skip_existing: true               # Skip scenes whose output files already exist;
 
   # --- Input / Output ---
   io:
@@ -1007,6 +1009,7 @@ tiles: {}
             scl_kwargs=self.to_scl_kwargs(),
             continue_on_error=self.acolite.continue_on_error,
             tile_config=self.to_tile_config(),
+            skip_existing=self.acolite.skip_existing,
         )
         return results
 
@@ -1072,6 +1075,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Log pipeline steps without executing them (only valid with --run).",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Reprocess all scenes, even those whose output files already exist. "
+            "Overrides skip_existing in the YAML config (only valid with --run)."
+        ),
+    )
     return parser
 
 
@@ -1089,6 +1101,8 @@ def main(argv=None) -> None:
 
     elif args.run:
         cfg = PipelineConfig.from_yaml(args.run)
+        if args.force:
+            cfg.acolite.skip_existing = False
         cfg.run(dry_run=args.dry_run)
 
 
