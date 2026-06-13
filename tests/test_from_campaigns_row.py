@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from rionegromatchup.acolite_spec import AcoliteConfig, IOConfig
-from rionegromatchup.pipeline_config import TileEntry, TilesSection
+from aquamatch.acolite_spec import AcoliteConfig, IOConfig
+from aquamatch.pipeline_config import TileEntry, TilesSection
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -106,7 +106,7 @@ class TestFromCampaignsRowLegacy:
         assert cfg.acolite_executable == "/fake/acolite"
 
     def test_kwargs_forwarded(self):
-        from rionegromatchup.acolite_spec import RadCorConfig
+        from aquamatch.acolite_spec import RadCorConfig
 
         custom_radcor = RadCorConfig(dsf_tile_dimensions=(60, 60))
         cfg = AcoliteConfig.from_campaigns_row(
@@ -304,7 +304,7 @@ class TestFromCampaignsRowMissingTile:
 
     def test_missing_s2_tile_emits_warning(self, caplog):
         tiles = _tiles(limit=[-34.2, -56.8, -33.0, -55.1])
-        with caplog.at_level(logging.WARNING, logger="rionegromatchup.acolite_spec"):
+        with caplog.at_level(logging.WARNING, logger="aquamatch.acolite_spec"):
             AcoliteConfig.from_campaigns_row(
                 row=_row(include_tile=False),
                 acolite_executable="/fake/acolite",

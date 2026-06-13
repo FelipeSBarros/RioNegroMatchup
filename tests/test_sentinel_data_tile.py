@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from rionegromatchup.sentinel_data import _tile_from_scene_id, build_catalog
+from aquamatch.sentinel_data import _tile_from_scene_id, build_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ class TestBuildCatalogTileFilter:
         output_json = tmp_path / "catalog.json"
 
         with patch(
-            "rionegromatchup.sentinel_data.search_images",
+            "aquamatch.sentinel_data.search_images",
             return_value=[_fake_image(tile="21HUD")],
         ):
             build_catalog(csv, output_json)
@@ -117,7 +117,7 @@ class TestBuildCatalogTileFilter:
         output_json = tmp_path / "catalog.json"
 
         with patch(
-            "rionegromatchup.sentinel_data.search_images",
+            "aquamatch.sentinel_data.search_images",
             return_value=[_fake_image(tile="21HVD")],  # wrong tile
         ):
             build_catalog(csv, output_json)
@@ -130,7 +130,7 @@ class TestBuildCatalogTileFilter:
         output_json = tmp_path / "catalog.json"
 
         with patch(
-            "rionegromatchup.sentinel_data.search_images",
+            "aquamatch.sentinel_data.search_images",
             return_value=[
                 _fake_image(tile="21HUD"),  # keep
                 _fake_image(tile="21HVD"),  # discard
@@ -148,7 +148,7 @@ class TestBuildCatalogTileFilter:
         output_json = tmp_path / "catalog.json"
 
         with patch(
-            "rionegromatchup.sentinel_data.search_images",
+            "aquamatch.sentinel_data.search_images",
             return_value=[_fake_image(tile="21HVD")],  # would be discarded if filtered
         ):
             build_catalog(csv, output_json)
@@ -163,9 +163,9 @@ class TestBuildCatalogTileFilter:
         output_json = tmp_path / "catalog.json"
 
         with patch(
-            "rionegromatchup.sentinel_data.search_images",
+            "aquamatch.sentinel_data.search_images",
             return_value=[],
-        ), caplog.at_level(logging.WARNING, logger="rionegromatchup.sentinel_data"):
+        ), caplog.at_level(logging.WARNING, logger="aquamatch.sentinel_data"):
             build_catalog(csv, output_json)
 
         assert any("s2_tile" in msg for msg in caplog.messages)
@@ -177,7 +177,7 @@ class TestBuildCatalogTileFilter:
 
         img = _fake_image(tile="21HUD", scl_tile="21HVD")  # SCL tile mismatch
         with patch(
-            "rionegromatchup.sentinel_data.search_images",
+            "aquamatch.sentinel_data.search_images",
             return_value=[img],
         ):
             build_catalog(csv, output_json)
@@ -192,7 +192,7 @@ class TestBuildCatalogTileFilter:
 
         img = _fake_image(tile="21HUD", scl_tile="21HUD")
         with patch(
-            "rionegromatchup.sentinel_data.search_images",
+            "aquamatch.sentinel_data.search_images",
             return_value=[img],
         ):
             build_catalog(csv, output_json)

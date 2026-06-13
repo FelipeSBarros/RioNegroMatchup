@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rionegromatchup.pipeline_config import (
+from aquamatch.pipeline_config import (
     main,
 )
 
@@ -193,7 +193,7 @@ class TestToAcoliteConfig:
         return PipelineConfig()
 
     def test_returns_acolite_config(self):
-        from rionegromatchup.acolite_spec import AcoliteConfig
+        from aquamatch.acolite_spec import AcoliteConfig
 
         cfg = self._default_cfg()
         result = cfg.to_acolite_config()
@@ -224,7 +224,7 @@ class TestToAcoliteConfig:
         assert result.io.limit == (-33.25, -58.45, -33.17, -58.33)
 
     def test_aerosol_correction_enum(self):
-        from rionegromatchup.acolite_spec import AcoliteAtmosphericProcessor
+        from aquamatch.acolite_spec import AcoliteAtmosphericProcessor
 
         cfg = PipelineConfig()
         cfg.acolite.radcor.aerosol_correction = "dsf"
@@ -232,7 +232,7 @@ class TestToAcoliteConfig:
         assert result.radcor.aerosol_correction == AcoliteAtmosphericProcessor.DSF
 
     def test_glint_method_enum(self):
-        from rionegromatchup.acolite_spec import AcoliteGlintCorrection
+        from aquamatch.acolite_spec import AcoliteGlintCorrection
 
         cfg = PipelineConfig()
         result = cfg.to_acolite_config()
@@ -258,7 +258,7 @@ class TestToAcoliteConfig:
 
     def test_low_memory_flag_produces_acolite_config(self):
         """low_memory=True must still return an AcoliteConfig (hook exists)."""
-        from rionegromatchup.acolite_spec import AcoliteConfig
+        from aquamatch.acolite_spec import AcoliteConfig
 
         cfg = PipelineConfig()
         cfg.acolite.low_memory = True
@@ -434,7 +434,7 @@ from unittest.mock import patch
 
 import pytest
 
-from rionegromatchup.pipeline_config import (
+from aquamatch.pipeline_config import (
     PipelineConfig,
     TileEntry,
     TilesSection,
@@ -513,7 +513,7 @@ class TestRunAcoliteTileConfigWiring:
             return []
 
         with patch(
-            "rionegromatchup.acolite_spec.AcoliteConfig.run_batch",
+            "aquamatch.acolite_spec.AcoliteConfig.run_batch",
             side_effect=fake_run_batch,
         ):
             pipeline._run_acolite()
@@ -554,7 +554,7 @@ class TestRunAcoliteTileConfigWiring:
             return []
 
         with patch(
-            "rionegromatchup.acolite_spec.AcoliteConfig.run_batch",
+            "aquamatch.acolite_spec.AcoliteConfig.run_batch",
             side_effect=fake_run_batch,
         ):
             pipeline._run_acolite()
@@ -606,7 +606,7 @@ class TestSentinelArgsWiring:
             captured["cloud_cover"] = cloud_cover
 
         with patch(
-            "rionegromatchup.pipeline_config.PipelineConfig._run_sentinel_catalog",
+            "aquamatch.pipeline_config.PipelineConfig._run_sentinel_catalog",
         ):
             args = cfg.to_sentinel_args()
             assert args["time_delta_days"] == 2

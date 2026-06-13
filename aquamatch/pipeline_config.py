@@ -1,7 +1,7 @@
 """
 pipeline_config.py
 ==================
-YAML-driven pipeline configuration for the Río Negro Matchup workflow.
+YAML-driven pipeline configuration for the aquamatch workflow.
 
 A single YAML file drives the entire pipeline — one file per campaign,
 version-controlled, self-documenting.
@@ -10,11 +10,11 @@ Usage
 -----
 Generate a template::
 
-    python -m rionegromatchup.pipeline_config --generate campaign_2025.yaml
+    python -m aquamatch.pipeline_config --generate campaign_2025.yaml
 
 Run the full pipeline::
 
-    python -m rionegromatchup.pipeline_config --run campaign_2025.yaml
+    python -m aquamatch.pipeline_config --run campaign_2025.yaml
 
 Programmatic usage::
 
@@ -327,7 +327,7 @@ class TilesSection:
 
 @dataclass
 class PipelineConfig:
-    """Master pipeline configuration for Río Negro Matchup."""
+    """Master pipeline configuration for aquamatch."""
 
     campaign_name: str = "rio_negro_2025"
     description: str = "Sentinel-2 / in situ water quality matchup"
@@ -367,16 +367,16 @@ class PipelineConfig:
 
         template = """\
 # =============================================================================
-# Río Negro Matchup — Pipeline Configuration
+# aquamatch — Pipeline Configuration
 # =============================================================================
 # One YAML file drives the entire pipeline: in situ data preparation,
 # satellite catalog building, product download, and atmospheric correction.
 #
 # Usage:
 #   Generate this template:
-#     python -m rionegromatchup.pipeline_config --generate campaign_2025.yaml
+#     python -m aquamatch.pipeline_config --generate campaign_2025.yaml
 #   Run the full pipeline:
-#     python -m rionegromatchup.pipeline_config --run campaign_2025.yaml
+#     python -m aquamatch.pipeline_config --run campaign_2025.yaml
 # =============================================================================
 
 campaign_name: rio_negro_2025       # Identifier for this campaign run
@@ -672,7 +672,7 @@ tiles: {}
         -------
         AcoliteConfig
         """
-        from rionegromatchup.acolite_spec import (
+        from aquamatch.acolite_spec import (
             AcoliteConfig,
             IOConfig,
             RadCorConfig,
@@ -919,7 +919,7 @@ tiles: {}
     # ---------------------------------------------------------------------------
 
     def _run_insitu(self) -> dict:
-        from rionegromatchup.insitu_data import (
+        from aquamatch.insitu_data import (
             read_stations,
             read_campaigns,
             clean_campaigns,
@@ -968,7 +968,7 @@ tiles: {}
         return {"status": "ok", "n_unique": len(df_clean)}
 
     def _run_sentinel_catalog(self) -> dict:
-        from rionegromatchup.sentinel_data import build_catalog
+        from aquamatch.sentinel_data import build_catalog
 
         args = self.to_sentinel_args()
         build_catalog(
@@ -980,7 +980,7 @@ tiles: {}
         return {"status": "ok", "catalog_json": str(args["catalog_json"])}
 
     def _run_download(self) -> dict:
-        from rionegromatchup.sentinel_data import run_download
+        from aquamatch.sentinel_data import run_download
 
         args = self.to_sentinel_args()
         run_download(
@@ -1055,8 +1055,8 @@ def _check_keys(raw: dict, dataclass_type, context: str) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m rionegromatchup.pipeline_config",
-        description="Río Negro Matchup — YAML-driven pipeline runner",
+        prog="python -m aquamatch.pipeline_config",
+        description="aquamatch — YAML-driven pipeline runner",
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(

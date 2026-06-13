@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rionegromatchup.acolite_spec import IOConfig, RadCorConfig
+from aquamatch.acolite_spec import IOConfig, RadCorConfig
 
 
 class TestIOConfigPolygonClip:
@@ -96,7 +96,7 @@ class TestIOConfigPolygonClip:
     # --- Serialisation ---
 
     def test_polygon_clip_true_appears_in_settings_dict(self, tmp_path):
-        from rionegromatchup.acolite_spec import AcoliteConfig
+        from aquamatch.acolite_spec import AcoliteConfig
 
         polygon_file = tmp_path / "water.geojson"
         polygon_file.write_text("{}")
@@ -115,7 +115,7 @@ class TestIOConfigPolygonClip:
         assert settings.get("polygon") == str(polygon_file)
 
     def test_polygon_clip_false_absent_from_settings_dict(self):
-        from rionegromatchup.acolite_spec import AcoliteConfig
+        from aquamatch.acolite_spec import AcoliteConfig
 
         cfg = AcoliteConfig(
             acolite_executable="/fake/acolite",
@@ -132,8 +132,8 @@ class TestIOConfigPolygonClip:
 import numpy as np
 import rasterio
 from rasterio.transform import from_bounds
-from rionegromatchup.acolite_spec import AcoliteConfig
-from rionegromatchup.scl_water import SCL_WATER_CLASS, GEOJSON_SUBDIR
+from aquamatch.acolite_spec import AcoliteConfig
+from aquamatch.scl_water import SCL_WATER_CLASS, GEOJSON_SUBDIR
 
 # Reuse same synthetic raster helper pattern from test_scl_water.py
 _TEST_CRS = "EPSG:32721"
@@ -535,7 +535,7 @@ class TestRunBatchSclExtension:
         cfg = _make_batch_cfg(tmp_path)
 
         with patch(
-            "rionegromatchup.acolite_spec.AcoliteConfig.with_scl_polygon",
+            "aquamatch.acolite_spec.AcoliteConfig.with_scl_polygon",
             side_effect=ValueError("no water pixels"),
         ), patch.object(
             cfg,
@@ -702,7 +702,7 @@ class TestLogging:
                 limit=(-33.0, -57.0, -32.5, -56.0),
             ),
         )
-        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+        with caplog.at_level(logging.INFO, logger="aquamatch.acolite_spec"):
             cfg.to_settings_file(tmp_path / "settings.txt")
 
         assert any("ROI" in m for m in caplog.messages)
@@ -720,7 +720,7 @@ class TestLogging:
                 polygon_clip=True,
             ),
         )
-        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+        with caplog.at_level(logging.INFO, logger="aquamatch.acolite_spec"):
             cfg.to_settings_file(tmp_path / "settings.txt")
 
         assert any("polygon_clip=true" in m for m in caplog.messages)
@@ -730,7 +730,7 @@ class TestLogging:
             acolite_executable="/fake/acolite",
             io=IOConfig(inputfile="", output=""),
         )
-        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+        with caplog.at_level(logging.INFO, logger="aquamatch.acolite_spec"):
             cfg.to_settings_file(tmp_path / "settings.txt")
 
         assert any("full scene" in m for m in caplog.messages)
@@ -738,7 +738,7 @@ class TestLogging:
     def test_with_scl_polygon_logs_scl_name(self, tmp_path, caplog):
         scl = _make_scl(tmp_path)
         cfg = _make_cfg(tmp_path)
-        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+        with caplog.at_level(logging.INFO, logger="aquamatch.acolite_spec"):
             cfg.with_scl_polygon(scl, min_area_m2=0)
 
         assert any(scl.name in m for m in caplog.messages)
@@ -746,7 +746,7 @@ class TestLogging:
     def test_with_scl_polygon_logs_polygon_path(self, tmp_path, caplog):
         scl = _make_scl(tmp_path)
         cfg = _make_cfg(tmp_path)
-        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+        with caplog.at_level(logging.INFO, logger="aquamatch.acolite_spec"):
             result = cfg.with_scl_polygon(scl, min_area_m2=0)
 
         assert any(".geojson" in m for m in caplog.messages)

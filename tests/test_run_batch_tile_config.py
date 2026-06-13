@@ -27,9 +27,9 @@ import pytest
 import rasterio
 from rasterio.transform import from_bounds
 
-from rionegromatchup.acolite_spec import AcoliteConfig, IOConfig
-from rionegromatchup.pipeline_config import TileEntry, TilesSection
-from rionegromatchup.scl_water import SCL_WATER_CLASS
+from aquamatch.acolite_spec import AcoliteConfig, IOConfig
+from aquamatch.pipeline_config import TileEntry, TilesSection
+from aquamatch.scl_water import SCL_WATER_CLASS
 
 # ---------------------------------------------------------------------------
 # Shared test fixtures / helpers
@@ -255,7 +255,7 @@ class TestRunBatchTilePolygon:
 
         with patch.object(
             cfg, "_execute", side_effect=lambda p: _fake_execute(safe, tmp_path)
-        ), caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+        ), caplog.at_level(logging.INFO, logger="aquamatch.acolite_spec"):
             cfg.run_batch(
                 [safe],
                 tmp_path,
@@ -439,7 +439,7 @@ class TestRunBatchUnrecognisableSafeName:
 
         with patch.object(
             cfg, "_execute", side_effect=lambda p: _fake_execute(safe, tmp_path)
-        ), caplog.at_level(logging.WARNING, logger="rionegromatchup.acolite_spec"):
+        ), caplog.at_level(logging.WARNING, logger="aquamatch.acolite_spec"):
             cfg.run_batch([safe], tmp_path, tile_config=tiles)
 
         assert any("tile ID" in msg for msg in caplog.messages)

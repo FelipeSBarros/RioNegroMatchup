@@ -25,8 +25,8 @@ import pytest
 import rasterio
 from rasterio.transform import from_bounds
 
-from rionegromatchup.acolite_spec import AcoliteConfig, IOConfig
-from rionegromatchup.scl_water import SCL_WATER_CLASS
+from aquamatch.acolite_spec import AcoliteConfig, IOConfig
+from aquamatch.scl_water import SCL_WATER_CLASS
 
 # ---------------------------------------------------------------------------
 # Shared helpers (mirrors pattern from test_acoilite_spec.py)
@@ -279,7 +279,7 @@ class TestSkipExistingLogging:
         cfg = _make_cfg(tmp_path)
         _write_outputs(tmp_path / _SCENE_STEM)
 
-        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+        with caplog.at_level(logging.INFO, logger="aquamatch.acolite_spec"):
             cfg.run_batch([safe], tmp_path, skip_existing=True)
 
         assert any("already" in msg.lower() for msg in caplog.messages)
@@ -289,7 +289,7 @@ class TestSkipExistingLogging:
         cfg = _make_cfg(tmp_path)
         _write_outputs(tmp_path / _SCENE_STEM)
 
-        with caplog.at_level(logging.INFO, logger="rionegromatchup.acolite_spec"):
+        with caplog.at_level(logging.INFO, logger="aquamatch.acolite_spec"):
             cfg.run_batch([safe], tmp_path, skip_existing=True)
 
         assert any(_SCENE_STEM in msg for msg in caplog.messages)

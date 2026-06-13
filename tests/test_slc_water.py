@@ -16,7 +16,7 @@ import rasterio
 from rasterio.transform import from_bounds
 import geopandas as gpd
 
-from rionegromatchup.scl_water import (
+from aquamatch.scl_water import (
     scl_water_to_geojson,
     _parse_date_from_filename,
     SCL_WATER_CLASS,
@@ -329,7 +329,7 @@ class TestSclWaterToGeojson:
 # ---------------------------------------------------------------------------
 
 # Re-import with new symbols for Feature 2 tests
-from rionegromatchup.scl_water import resolve_scl_path, build_water_polygon_datacube
+from aquamatch.scl_water import resolve_scl_path, build_water_polygon_datacube
 
 # ---------------------------------------------------------------------------
 # resolve_scl_path

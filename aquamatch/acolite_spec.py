@@ -358,7 +358,7 @@ Processing status helpers for acolite_spec.py
 if TYPE_CHECKING:
     # Avoid circular import at runtime; AcoliteConfig is defined later
     # in the same file.  At type-check time we can reference it normally.
-    from rionegromatchup.acolite_spec import AcoliteConfig
+    from aquamatch.acolite_spec import AcoliteConfig
 
 
 def expected_outputs(
@@ -711,8 +711,8 @@ class AcoliteConfig:
             - ``skipped_existing`` (bool): whether the scene was skipped
               because its outputs were already present
         """
-        from rionegromatchup.scl_water import resolve_scl_path
-        from rionegromatchup.sentinel_data import _tile_from_scene_id
+        from aquamatch.scl_water import resolve_scl_path
+        from aquamatch.sentinel_data import _tile_from_scene_id
 
         if not Path(self.acolite_executable).expanduser().exists():
             raise FileNotFoundError(
@@ -1063,7 +1063,7 @@ def _with_scl_polygon(
     overwrite=False,
     **scl_kwargs,
 ):
-    from rionegromatchup.scl_water import scl_water_to_geojson, GEOJSON_SUBDIR
+    from aquamatch.scl_water import scl_water_to_geojson, GEOJSON_SUBDIR
 
     scl_path = Path(scl_path)
 
