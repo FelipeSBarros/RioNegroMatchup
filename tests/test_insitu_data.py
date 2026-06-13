@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from rionegromatchup.insitu_data import (
+from aquamatch.insitu_data import (
     setup_names,
     clean_campaigns,
     merge_stations_campaigns,

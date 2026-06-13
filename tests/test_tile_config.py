@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from rionegromatchup.pipeline_config import (
+from aquamatch.pipeline_config import (
     TileEntry,
     TilesSection,
     PipelineConfig,

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from rionegromatchup.acolite_spec import (
+from aquamatch.acolite_spec import (
     AcoliteConfig,
     IOConfig,
     L2WConfig,

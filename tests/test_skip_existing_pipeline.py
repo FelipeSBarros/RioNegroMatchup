@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from rionegromatchup.pipeline_config import (
+from aquamatch.pipeline_config import (
     AcoliteSection,
     PipelineConfig,
 )
@@ -108,7 +108,7 @@ class TestRunAcoliteSkipExistingWiring:
             return []
 
         with patch(
-            "rionegromatchup.acolite_spec.AcoliteConfig.run_batch",
+            "aquamatch.acolite_spec.AcoliteConfig.run_batch",
             side_effect=fake_run_batch,
         ):
             pipeline._run_acolite()
@@ -124,7 +124,7 @@ class TestRunAcoliteSkipExistingWiring:
             return []
 
         with patch(
-            "rionegromatchup.acolite_spec.AcoliteConfig.run_batch",
+            "aquamatch.acolite_spec.AcoliteConfig.run_batch",
             side_effect=fake_run_batch,
         ):
             pipeline._run_acolite()

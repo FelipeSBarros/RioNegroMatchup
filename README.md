@@ -1,4 +1,4 @@
-# Río Negro Matchup
+# Aquamatch
 
 Python package and scripts to match Sentinel-2 satellite imagery with in situ water quality field measurements, apply atmospheric correction, and validate remote sensing water quality products.
 
@@ -18,8 +18,8 @@ Python package and scripts to match Sentinel-2 satellite imagery with in situ wa
 Clone the repository and install dependencies with [Poetry](https://python-poetry.org/):
 
 ```bash
-git clone https://github.com/your-org/rionegromatchup.git
-cd rionegromatchup
+git clone https://github.com/FelipeSBarros/aquamatch.git
+cd aquamatch
 poetry install
 ```
 
@@ -58,13 +58,13 @@ Reads field campaign data from the [OAN](https://www.ambiente.gub.uy/iSIA_OAN/),
 - `campaigns_unique_data.csv` — one row per unique (date, tile) pair, used to drive the satellite search
 
 ```bash
-python rionegromatchup/insitu_data.py --mode campaigns
+python aquamatch/insitu_data.py --mode campaigns
 ```
 
 To use files in non-default locations:
 
 ```bash
-python rionegromatchup/insitu_data.py --mode campaigns \
+python aquamatch/insitu_data.py --mode campaigns \
   --stations data/original_data/my_stations.xlsx \
   --campaigns data/original_data/my_export.xlsx
 ```
@@ -80,7 +80,7 @@ Searches for Sentinel-2 L1C scenes that match each field date and location from 
 The result is a `sentinel_catalog.json` file listing matched scenes per field date.
 
 ```bash
-python rionegromatchup/sentinel_data.py --mode catalog \
+python aquamatch/sentinel_data.py --mode catalog \
   --csv data/monitoring_data/campaigns_unique_data.csv \
   --time-delta 2 \
   --cloud-cover 20
@@ -93,7 +93,7 @@ python rionegromatchup/sentinel_data.py --mode catalog \
 Downloads the SAFE products and SCL assets listed in the catalog. Already-downloaded scenes are skipped automatically.
 
 ```bash
-python rionegromatchup/sentinel_data.py --mode download \
+python aquamatch/sentinel_data.py --mode download \
   --download-scl
 ```
 
@@ -106,7 +106,7 @@ python rionegromatchup/sentinel_data.py --mode download \
 Runs [ACOLITE](https://github.com/acolite/acolite) on the downloaded SAFE folders to produce surface reflectance and water quality products (turbidity, SPM, chlorophyll-a, and others) as NetCDF files.
 
 ```python
-from rionegromatchup.acolite_spec import AcoliteConfig, IOConfig
+from aquamatch.acolite_spec import AcoliteConfig, IOConfig
 
 cfg = AcoliteConfig(
     acolite_executable="/path/to/acolite",
@@ -137,13 +137,13 @@ The pipeline can also be driven entirely from a single YAML file — one file pe
 **Generate a template:**
 
 ```bash
-python -m rionegromatchup.pipeline_config --generate campaign_2025.yaml
+python -m aquamatch.pipeline_config --generate campaign_2025.yaml
 ```
 
 The generated file includes every parameter at its default value, with inline comments documenting units and valid options. Edit it for your campaign, then run:
 
 ```bash
-python -m rionegromatchup.pipeline_config --run campaign_2025.yaml
+python -m aquamatch.pipeline_config --run campaign_2025.yaml
 ```
 
 Individual steps can be disabled by setting `enabled: false`:
@@ -174,13 +174,13 @@ tiles:
 **Dry-run** (validate config and log steps without executing):
 
 ```bash
-python -m rionegromatchup.pipeline_config --run campaign_2025.yaml --dry-run
+python -m aquamatch.pipeline_config --run campaign_2025.yaml --dry-run
 ```
 
 **Force reprocess** (ignore existing outputs and reprocess all scenes):
 
 ```bash
-python -m rionegromatchup.pipeline_config --run campaign_2025.yaml --force
+python -m aquamatch.pipeline_config --run campaign_2025.yaml --force
 ```
 
 ### Per-tile spatial restrictions
@@ -216,10 +216,10 @@ For scripting and integration into custom workflows, all pipeline steps can be c
 
 ```bash
 # Step 1 — prepare in situ data
-python rionegromatchup/insitu_data.py --mode campaigns
+python aquamatch/insitu_data.py --mode campaigns
 
 # Step 2 — build catalog (±2 days, max 20% cloud cover)
-python rionegromatchup/sentinel_data.py --mode catalog \
+python aquamatch/sentinel_data.py --mode catalog \
   --csv data/monitoring_data/campaigns_unique_data.csv \
   --time-delta 2 \
   --cloud-cover 20
@@ -231,8 +231,8 @@ python rionegromatchup/sentinel_data.py --mode download \
 
 ```python
 from pathlib import Path
-from rionegromatchup.acolite_spec import AcoliteConfig, IOConfig
-from rionegromatchup.pipeline_config import TilesSection, TileEntry
+from aquamatch.acolite_spec import AcoliteConfig, IOConfig
+from aquamatch.pipeline_config import TilesSection, TileEntry
 
 cfg = AcoliteConfig(
     acolite_executable="/path/to/acolite",
@@ -263,8 +263,8 @@ results = cfg.run_batch(
 You can also resolve tile restrictions per row when building configs from campaign data:
 
 ```python
-from rionegromatchup.acolite_spec import AcoliteConfig
-from rionegromatchup.pipeline_config import TilesSection
+from aquamatch.acolite_spec import AcoliteConfig
+from aquamatch.pipeline_config import TilesSection
 
 tiles = TilesSection.from_dict({
     "21HUD": {"polygon": "data/polygons/21HUD.geojson"},

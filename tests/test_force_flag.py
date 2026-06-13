@@ -18,7 +18,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from rionegromatchup.pipeline_config import (
+from aquamatch.pipeline_config import (
     PipelineConfig,
     _build_parser,
     main,
