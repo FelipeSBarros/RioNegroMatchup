@@ -35,16 +35,16 @@ pip install .
 
 ## Environment Setup
 
-Create a `.env` file in the project root with your API credentials before running any step:
+Create a `.env` file in the project root with your API credentials before running any step:  
+* `SH` for SentinelHub (see [documentation](https://sentinelhub-py.readthedocs.io/en/latest/configure.html))  
+* `DATASPACE` for Copernicus Dataspace (see [documentation](https://documentation.dataspace.copernicus.eu/APIs/S3.html#example-script-to-download-product-using-boto3))   
 
 ```env
-SH_CLIENT_ID=your_sentinelhub_client_id
-SH_CLIENT_SECRET=your_sentinelhub_client_secret
+SH_CLIENT_ID=your_sentinelhub_client_id    # SentinelHub
+SH_CLIENT_SECRET=your_sentinelhub_client_secret    # SentinelHub
 DATASPACE_ACCESS_KEY=your_copernicus_dataspace_access_key
 DATASPACE_SECRET_KEY=your_copernicus_dataspace_secret_key
 ```
-
-See the [Copernicus Dataspace documentation](https://documentation.dataspace.copernicus.eu/APIs/S3.html#example-script-to-download-product-using-boto3) for details on obtaining your access key and secret.
 
 ---
 
@@ -52,7 +52,9 @@ See the [Copernicus Dataspace documentation](https://documentation.dataspace.cop
 
 ### Step 1 — Prepare in situ data
 
-Reads field campaign data from the [OAN](https://www.ambiente.gub.uy/iSIA_OAN/), cleans measurement values, assigns each station its Sentinel-2 tile, and produces two outputs:
+This package was developed to work with in-situ data from the [OAN](https://www.ambiente.gub.uy/iSIA_OAN/). 
+You are therefore expected to save your campaign and station datasets in the './data/original_data' folder.
+This step involves reading field campaign data, cleaning measurement values and, if specified, assigning each station its Sentinel-2 tile. Two outputs are produced:
 
 - `campaigns_organized.csv` — full cleaned dataset for analysis
 - `campaigns_unique_data.csv` — one row per unique (date, tile) pair, used to drive the satellite search
@@ -61,12 +63,12 @@ Reads field campaign data from the [OAN](https://www.ambiente.gub.uy/iSIA_OAN/),
 python aquamatch/insitu_data.py --mode campaigns
 ```
 
-To use files in non-default locations:
+To use files with non-default names or in non-default locations:
 
 ```bash
 python aquamatch/insitu_data.py --mode campaigns \
-  --stations data/original_data/my_stations.xlsx \
-  --campaigns data/original_data/my_export.xlsx
+  --stations your_path/my_stations.xlsx \
+  --campaigns your_path/my_export.xlsx
 ```
 
 > The `--skip-clean` flag is available if the OAN export has already been cleaned before download. [See OAN's documention](https://www.ambiente.gub.uy/iSIA_OAN/guia.html)
@@ -77,8 +79,6 @@ python aquamatch/insitu_data.py --mode campaigns \
 
 Searches for Sentinel-2 L1C scenes that match each field date and location from `campaigns_unique_data.csv`. Only scenes whose MGRS tile matches the station's assigned tile are kept. For each L1C scene, the corresponding L2A scene is looked up to retrieve the SCL (Scene Classification) asset URL.
 
-The result is a `sentinel_catalog.json` file listing matched scenes per field date.
-
 ```bash
 python aquamatch/sentinel_data.py --mode catalog \
   --csv data/monitoring_data/campaigns_unique_data.csv \
@@ -86,11 +86,35 @@ python aquamatch/sentinel_data.py --mode catalog \
   --cloud-cover 20
 ```
 
+The result is a `sentinel_catalog.json` file listing matched scenes per field date.
+
+```json
+[
+  {
+    "field_date": "2025-11-05",
+    "images_found": [
+      {
+        "id": "S2B_MSIL1C_20251103T134659_N0511_R024_T21HVD_20251103T170338.SAFE",
+        "datetime": "2025-11-03T14:01:38.729Z",
+        "cloud_cover": 0.0,
+        "href": "s3://eodata/Sentinel-2/MSI/L1C/2025/11/03/S2B_MSIL1C_20251103T134659_N0511_R024_T21HVD_20251103T170338.SAFE/",
+        "delta_days": 2,
+        "l2a_scl": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/21/H/VD/2025/11/S2B_21HVD_20251103_0_L2A/SCL.tif"
+      },
+      {
+        ...
+      }
+    ]
+  }
+]
+```
+
 ---
 
 ### Step 3 — Download imagery
 
-Downloads the SAFE products and SCL assets listed in the catalog. Already-downloaded scenes are skipped automatically.
+Download the SAFE products and SCL assets (the latter if desired, using `--download-scl` flag) listed in the catalogue. Any scenes that have already been downloaded are skipped automatically.
+The SCL asset can be used in Step 4 as a source of spatial waterbody information.
 
 ```bash
 python aquamatch/sentinel_data.py --mode download \
