@@ -246,6 +246,7 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
         for date, scenes in scenes_by_date.items()
     ]
 
+    output_json.parent.mkdir(parents=True, exist_ok=True)
     with open(output_json, "w") as f:
         json.dump(catalog_data, f, indent=2)
 
