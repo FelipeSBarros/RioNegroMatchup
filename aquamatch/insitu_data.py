@@ -226,12 +226,11 @@ def clean_campaigns(campaigns: pd.DataFrame) -> pd.DataFrame:
 
     A lógica de substituição (<LD, <LC, LD<X<LC) está centralizada em
     ``clean_value``, que recebe os valores dos limites por linha.
+
+    The ``fecha_muestra → date`` rename is delegated to
+    :func:`_normalize_date_column` so the logic stays in one place.
     """
-    if "fecha_muestra" in campaigns.columns and "date" not in campaigns.columns:
-        campaigns["fecha_muestra"] = pd.to_datetime(
-            campaigns["fecha_muestra"], errors="coerce"
-        )
-        campaigns = campaigns.rename(columns={"fecha_muestra": "date"})
+    campaigns = _normalize_date_column(campaigns)
 
     campaigns["organized_value"] = campaigns.apply(
         lambda row: clean_value(
@@ -306,6 +305,224 @@ def remove_duplicate_records(
     return df_clean
 
 
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _normalize_date_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure the date column is named ``date`` and contains ``datetime64`` values.
+
+    When the raw export from OAN still carries the original Spanish column name
+    ``fecha_muestra``, this function renames it and parses its values.  If
+    ``date`` already exists the DataFrame is returned unchanged.
+
+    This is the single canonical implementation of the rename logic — both
+    :func:`clean_campaigns` (full cleaning path) and
+    :func:`run_insitu_pipeline` (``skip_clean=True`` path) delegate here so
+    the behaviour never diverges.
+
+    Parameters
+    ----------
+    df:
+        Campaigns DataFrame as returned by :func:`read_campaigns`.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with a ``date`` column of type ``datetime64[ns]``.
+    """
+    if "fecha_muestra" in df.columns and "date" not in df.columns:
+        logger.info("Renaming 'fecha_muestra' → 'date' and parsing as datetime.")
+        df = df.copy()
+        df["fecha_muestra"] = pd.to_datetime(df["fecha_muestra"], errors="coerce")
+        df = df.rename(columns={"fecha_muestra": "date"})
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Public pipeline wrapper
+# ---------------------------------------------------------------------------
+
+
+def run_insitu_pipeline(
+    stations: "Path | str | None" = None,
+    campaigns: "Path | str | None" = None,
+    output_campaigns_csv: "Path | str | None" = None,
+    output_unique_csv: "Path | str | None" = None,
+    skip_clean: bool = False,
+) -> dict:
+    """
+    Run the full in situ campaigns pipeline and return a status dict.
+
+    This is the importable equivalent of::
+
+        python -m aquamatch.insitu_data --mode campaigns
+
+    It orchestrates :func:`read_stations`, :func:`read_campaigns`,
+    :func:`clean_campaigns`, :func:`merge_stations_campaigns`, and
+    :func:`remove_duplicate_records`, then writes two CSV outputs:
+
+    * **campaigns CSV** — full merged table (``observaciones`` column dropped).
+    * **unique CSV** — deduplicated records with columns
+      ``[date, latitud, longitud, s2_tile]``, suitable as input to
+      :func:`~aquamatch.sentinel_data.run_sentinel_pipeline`.
+
+    Parameters
+    ----------
+    stations:
+        Path to the stations file (``.xlsx`` or ``.csv``).
+        Defaults to ``data/original_data/estaciones-seleccionadas.xlsx``.
+    campaigns:
+        Path to the campaigns export file (``.xlsx`` or ``.csv``).
+        Must be in **long format** (≤ 35 columns). Defaults to
+        ``data/original_data/campaigns_sample.xlsx``.
+    output_campaigns_csv:
+        Destination path for the merged campaigns CSV.
+        Defaults to ``data/monitoring_data/campaigns_organized.csv``.
+    output_unique_csv:
+        Destination path for the deduplicated unique-records CSV.
+        Defaults to ``data/monitoring_data/campaigns_unique_data.csv``.
+    skip_clean:
+        If ``True``, skip :func:`clean_campaigns` (value cleaning and
+        ``organized_value`` computation).  Use when the OAN export has
+        already been cleaned upstream.  The ``fecha_muestra → date``
+        rename is still applied regardless of this flag.
+
+    Returns
+    -------
+    dict
+        ``{"step": "insitu", "status": "success", "outputs": {...},
+        "error": None, "elapsed_seconds": float}``
+
+        On failure the dict has ``"status": "error"`` and the exception
+        message in ``"error"``.  ``outputs`` keys:
+
+        * ``n_merged`` — total rows in the merged DataFrame.
+        * ``n_unique`` — rows written to the unique-records CSV
+          (after duplicate removal on ``date + s2_tile``).
+        * ``campaigns_csv`` — resolved path of the campaigns output.
+        * ``unique_csv`` — resolved path of the unique-records output.
+
+    Raises
+    ------
+    RuntimeError
+        If either the stations or campaigns DataFrame is empty after
+        reading (file not found, unreadable, or all rows filtered out).
+
+    Examples
+    --------
+    Using explicit paths::
+
+        from aquamatch.insitu_data import run_insitu_pipeline
+
+        result = run_insitu_pipeline(
+            stations="data/original_data/my_stations.xlsx",
+            campaigns="data/original_data/my_export.xlsx",
+        )
+        print(result["outputs"]["n_unique"])
+
+    Relying on project defaults::
+
+        result = run_insitu_pipeline()
+
+    Skipping value cleaning (pre-cleaned export)::
+
+        result = run_insitu_pipeline(
+            campaigns="data/original_data/clean_export.xlsx",
+            skip_clean=True,
+        )
+    """
+    import time
+
+    # --- Resolve defaults from InsituSection to keep a single source of truth ---
+    from aquamatch.pipeline_config import InsituSection
+
+    _defaults = InsituSection()
+
+    stations_path = (
+        Path(stations) if stations is not None else Path(_defaults.stations_path)
+    )
+    campaigns_path = (
+        Path(campaigns) if campaigns is not None else Path(_defaults.campaigns_path)
+    )
+    out_campaigns = (
+        Path(output_campaigns_csv)
+        if output_campaigns_csv is not None
+        else Path(_defaults.output_campaigns_csv)
+    )
+    out_unique = (
+        Path(output_unique_csv)
+        if output_unique_csv is not None
+        else Path(_defaults.output_unique_csv)
+    )
+
+    t0 = time.monotonic()
+
+    try:
+        # --- Read ---
+        stations_df = read_stations(stations_path)
+        campaigns_df = read_campaigns(campaigns_path)
+
+        if stations_df.empty or campaigns_df.empty:
+            raise RuntimeError(
+                "Empty DataFrame after reading inputs — check that both files exist "
+                f"and are non-empty.\n  stations:  {stations_path}\n"
+                f"  campaigns: {campaigns_path}"
+            )
+
+        # --- Clean / normalise date column ---
+        if not skip_clean:
+            logger.info("Running clean_campaigns...")
+            campaigns_df = clean_campaigns(campaigns_df)
+        else:
+            logger.info("Skipping clean_campaigns (skip_clean=True).")
+            campaigns_df = _normalize_date_column(campaigns_df)
+
+        # --- Merge ---
+        merged_df = merge_stations_campaigns(stations_df, campaigns_df)
+
+        # --- Write campaigns CSV ---
+        out_campaigns.parent.mkdir(parents=True, exist_ok=True)
+        merged_df.drop(columns="observaciones", errors="ignore").to_csv(
+            out_campaigns, index=False
+        )
+        logger.info(f"Campaigns CSV saved: {out_campaigns}")
+
+        # --- Deduplicate and write unique CSV ---
+        df_clean = remove_duplicate_records(merged_df)
+        df_unique = pd.DataFrame(
+            df_clean, columns=["date", "latitud", "longitud", "s2_tile"]
+        )
+        out_unique.parent.mkdir(parents=True, exist_ok=True)
+        df_unique.to_csv(out_unique, index=False)
+        logger.info(f"Unique records CSV saved: {out_unique}  ({len(df_unique)} rows)")
+
+        return {
+            "step": "insitu",
+            "status": "success",
+            "outputs": {
+                "n_merged": len(merged_df),
+                "n_unique": len(df_unique),
+                "campaigns_csv": out_campaigns,
+                "unique_csv": out_unique,
+            },
+            "error": None,
+            "elapsed_seconds": round(time.monotonic() - t0, 2),
+        }
+
+    except Exception as exc:
+        logger.error(f"run_insitu_pipeline failed: {exc}")
+        return {
+            "step": "insitu",
+            "status": "error",
+            "outputs": {},
+            "error": str(exc),
+            "elapsed_seconds": round(time.monotonic() - t0, 2),
+        }
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Pipeline to organize OAN in situ water quality monitoring data"
@@ -353,45 +570,10 @@ if __name__ == "__main__":
         build_final_csv(INPUT_DIR, FINAL_PATH, stations_coords)
 
     elif args.mode == "campaigns":
-        STATIONS_PATH = args.stations
-        CAMPAIGNS_PATH = args.campaigns
-        OUTPUT_CAMPAIGNS_PATH = Path("./data/monitoring_data/campaigns_organized.csv")
-        UNIQUE_DATA_PATH = Path("./data/monitoring_data/campaigns_unique_data.csv")
-
-        stations_df = read_stations(STATIONS_PATH)
-        campaigns_df = read_campaigns(CAMPAIGNS_PATH)
-
-        if stations_df.empty or campaigns_df.empty:
-            logger.error("Erro ao ler os arquivos de estações ou campanhas.")
-        else:
-            if not args.skip_clean:
-                logger.info("Executando limpeza de campanhas (clean_campaigns)...")
-                campaigns_df = clean_campaigns(campaigns_df)
-            else:
-                logger.info("Limpeza de campanhas ignorada (--skip-clean ativo). ")
-                if (
-                    "fecha_muestra" in campaigns_df.columns
-                    and "date" not in campaigns_df.columns
-                ):
-                    logger.info("Renomeando 'fecha_muestra' para 'date'...")
-                    campaigns_df["fecha_muestra"] = pd.to_datetime(
-                        campaigns_df["fecha_muestra"], errors="coerce"
-                    )
-                    campaigns_df = campaigns_df.rename(
-                        columns={"fecha_muestra": "date"}
-                    )
-
-            merged_df = merge_stations_campaigns(stations_df, campaigns_df)
-
-            df_clean = remove_duplicate_records(merged_df)
-            if UNIQUE_DATA_PATH is not None and len(df_clean) > 0:
-
-                df_clean = pd.DataFrame(
-                    df_clean, columns=["date", "latitud", "longitud", "s2_tile"]
-                )
-                UNIQUE_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-                df_clean.to_csv(UNIQUE_DATA_PATH, index=False)
-                logger.info(f"Registros unicos calvos em {UNIQUE_DATA_PATH}")
-            merged_df = merged_df.drop(columns="observaciones")
-            merged_df.to_csv(OUTPUT_CAMPAIGNS_PATH, index=False)
-            logger.info(f"Campanhas organizadas salvas em {OUTPUT_CAMPAIGNS_PATH}")
+        result = run_insitu_pipeline(
+            stations=args.stations,
+            campaigns=args.campaigns,
+            skip_clean=args.skip_clean,
+        )
+        if result["status"] != "success":
+            logger.error(f"Pipeline failed: {result['error']}")

@@ -63,9 +63,9 @@ This step involves reading field campaign data, cleaning measurement values and,
 - `campaigns_unique_data.csv` — one row per unique (date, tile) pair, used to drive the satellite search
 
 ```python
-from aquamatch.insitu_data import prepare_campaigns
+from aquamatch.insitu_data import run_insitu_pipeline
 
-prepare_campaigns(
+run_insitu_pipeline(
     stations="data/original_data/my_stations.xlsx",
     campaigns="data/original_data/my_export.xlsx",
 )
