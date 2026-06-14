@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aquamatch"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python package and script to validate, model water quality parameters with remote sensing data"
 authors = ["Felipe Sodré <felipe.b4rros@gmail.com>"]
 readme = "README.md"
