@@ -448,6 +448,194 @@ def run_download(
     logger.info(f"SCL baixados: {stats['scl_downloaded']}")
     logger.info(f"Erros: {stats['errors']}")
     logger.info("=" * 50)
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Public pipeline wrapper
+# ---------------------------------------------------------------------------
+
+
+def run_sentinel_pipeline(
+    unique_csv: "Path | str | None" = None,
+    catalog_json: "Path | str | None" = None,
+    output_dir: "Path | str | None" = None,
+    time_delta_days: int | None = None,
+    cloud_cover_max: int | None = None,
+    only_first: bool | None = None,
+    download_scl: bool | None = None,
+    steps: str = "all",
+) -> dict:
+    """
+    Run the Sentinel-2 catalog and/or download pipeline and return a status dict.
+
+    This is the importable equivalent of::
+
+        python -m aquamatch.sentinel_data --mode all
+
+    The ``steps`` parameter mirrors the CLI ``--mode`` flag:
+
+    * ``"all"``      — build catalog then download (default).
+    * ``"catalog"``  — only search and write the JSON catalog.
+    * ``"download"`` — only download products from an existing catalog.
+
+    Parameters
+    ----------
+    unique_csv:
+        Path to the deduplicated in situ CSV produced by
+        :func:`~aquamatch.insitu_data.run_insitu_pipeline`.
+        Required for ``steps="catalog"`` or ``"all"``.
+        Defaults to ``data/monitoring_data/campaigns_unique_data.csv``.
+    catalog_json:
+        Path to the catalog JSON file — written by the catalog step and
+        read by the download step.
+        Defaults to ``data/sentinel_downloads/sentinel_catalog.json``.
+    output_dir:
+        Root directory for downloaded SAFE products and SCL files.
+        Defaults to ``data/sentinel_downloads``.
+    time_delta_days:
+        Search window in days around each field date (±N days).
+        Defaults to ``1``.
+    cloud_cover_max:
+        Maximum cloud cover percentage for scene selection.
+        Defaults to ``10``.
+    only_first:
+        If ``True``, download only the first matching scene per field date.
+        Defaults to ``True``.
+    download_scl:
+        If ``True``, download the SCL (Scene Classification Layer) GeoTIFF
+        alongside each SAFE product.
+        Defaults to ``True``.
+    steps:
+        Which pipeline stages to run.  One of ``"all"``, ``"catalog"``,
+        or ``"download"``.  Defaults to ``"all"``.
+
+    Returns
+    -------
+    dict
+        ``{"step": "sentinel", "status": "success", "outputs": {...},
+        "error": None, "elapsed_seconds": float}``
+
+        On failure the dict has ``"status": "error"`` and the exception
+        message in ``"error"``.  ``outputs`` keys depend on which steps ran:
+
+        * ``catalog_json``        — resolved path of the catalog file
+          (catalog step).
+        * ``output_dir``          — resolved root download path
+          (download step).
+        * ``download_stats``      — stats dict from :func:`run_download`
+          with keys ``total_processed``, ``already_downloaded``,
+          ``safe_downloaded``, ``scl_downloaded``, ``errors``
+          (download step).
+
+    Raises
+    ------
+    ValueError
+        If ``steps`` is not one of ``"all"``, ``"catalog"``, or
+        ``"download"``.
+
+    Examples
+    --------
+    Full pipeline using project defaults::
+
+        from aquamatch.sentinel_data import run_sentinel_pipeline
+
+        result = run_sentinel_pipeline()
+
+    Catalog only, with custom search parameters::
+
+        result = run_sentinel_pipeline(
+            unique_csv="data/monitoring_data/campaigns_unique_data.csv",
+            catalog_json="data/sentinel_downloads/sentinel_catalog.json",
+            time_delta_days=2,
+            cloud_cover_max=20,
+            steps="catalog",
+        )
+
+    Download only, from an existing catalog::
+
+        result = run_sentinel_pipeline(
+            catalog_json="data/sentinel_downloads/sentinel_catalog.json",
+            output_dir="data/sentinel_downloads",
+            steps="download",
+        )
+    """
+    import time
+
+    valid_steps = {"all", "catalog", "download"}
+    if steps not in valid_steps:
+        raise ValueError(
+            f"Invalid steps value '{steps}'. Must be one of: {sorted(valid_steps)}"
+        )
+
+    # --- Resolve defaults from dataclass sections (single source of truth) ---
+    from aquamatch.pipeline_config import DownloadSection, SentinelSection
+
+    _s = SentinelSection()
+    _d = DownloadSection()
+
+    unique_csv_path = (
+        Path(unique_csv) if unique_csv is not None else Path(_s.unique_csv)
+    )
+    catalog_json_path = (
+        Path(catalog_json) if catalog_json is not None else Path(_s.catalog_json)
+    )
+    output_dir_path = (
+        Path(output_dir) if output_dir is not None else Path(_d.output_dir)
+    )
+    time_delta = time_delta_days if time_delta_days is not None else _s.time_delta_days
+    cloud_cover = cloud_cover_max if cloud_cover_max is not None else _s.cloud_cover_max
+    _only_first = only_first if only_first is not None else _d.only_first
+    _download_scl = download_scl if download_scl is not None else _d.download_scl
+
+    t0 = time.monotonic()
+    outputs = {}
+
+    try:
+        if steps in ("catalog", "all"):
+            logger.info(
+                f"[sentinel] Building catalog from {unique_csv_path} "
+                f"→ {catalog_json_path}"
+            )
+            build_catalog(
+                csv_file=unique_csv_path,
+                output_json=catalog_json_path,
+                time_delta=time_delta,
+                cloud_cover=cloud_cover,
+            )
+            outputs["catalog_json"] = catalog_json_path
+
+        if steps in ("download", "all"):
+            logger.info(
+                f"[sentinel] Downloading products from {catalog_json_path} "
+                f"→ {output_dir_path}"
+            )
+            download_stats = run_download(
+                catalog_json=catalog_json_path,
+                output_dir=output_dir_path,
+                only_first=_only_first,
+                download_scl=_download_scl,
+            )
+            outputs["output_dir"] = output_dir_path
+            outputs["download_stats"] = download_stats
+
+        return {
+            "step": "sentinel",
+            "status": "success",
+            "outputs": outputs,
+            "error": None,
+            "elapsed_seconds": round(time.monotonic() - t0, 2),
+        }
+
+    except Exception as exc:
+        logger.error(f"run_sentinel_pipeline failed: {exc}")
+        return {
+            "step": "sentinel",
+            "status": "error",
+            "outputs": outputs,
+            "error": str(exc),
+            "elapsed_seconds": round(time.monotonic() - t0, 2),
+        }
 
 
 if __name__ == "__main__":
@@ -497,18 +685,15 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.mode in ("catalog", "all"):
-        build_catalog(
-            args.csv,
-            args.output_json,
-            time_delta=args.time_delta,
-            cloud_cover=args.cloud_cover,
-        )
-
-    if args.mode in ("download", "all"):
-        run_download(
-            args.output_json,
-            args.output,
-            only_first=args.only_first,
-            download_scl=args.download_scl,
-        )
+    result = run_sentinel_pipeline(
+        unique_csv=args.csv,
+        catalog_json=args.output_json,
+        output_dir=args.output,
+        time_delta_days=args.time_delta,
+        cloud_cover_max=args.cloud_cover,
+        only_first=args.only_first,
+        download_scl=args.download_scl,
+        steps=args.mode,
+    )
+    if result["status"] != "success":
+        logger.error(f"Pipeline failed: {result['error']}")
