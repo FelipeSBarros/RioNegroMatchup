@@ -63,7 +63,7 @@ This step involves reading field campaign data, cleaning measurement values and,
 - `campaigns_unique_data.csv` — one row per unique (date, tile) pair, used to drive the satellite search
 
 ```python
-from aquamatch.insitu_data import run_insitu_pipeline
+from aquamatch import run_insitu_pipeline
 
 run_insitu_pipeline(
     stations="data/original_data/my_stations.xlsx",
@@ -87,12 +87,13 @@ python aquamatch/insitu_data.py --mode campaigns \
 Searches for Sentinel-2 L1C scenes that match each field date and location from `campaigns_unique_data.csv`. Only scenes whose MGRS tile matches the station's assigned tile are kept. For each L1C scene, the corresponding L2A scene is looked up to retrieve the SCL (Scene Classification) asset URL.
 
 ```python
-from aquamatch.sentinel_data import build_catalog
+from aquamatch import run_sentinel_pipeline
 
-build_catalog(
+run_sentinel_pipeline(
     csv="data/monitoring_data/campaigns_unique_data.csv",
     time_delta=2,
     cloud_cover=20,
+    steps="catalog"
 )
 ```
 
@@ -135,13 +136,13 @@ python aquamatch/sentinel_data.py --mode catalog \
 Download the SAFE products and SCL assets (the latter if desired, using `--download-scl` flag) listed in the catalogue. Any scenes that have already been downloaded are skipped automatically.
 
 ```python
-from aquamatch.sentinel_data import download_imagery
+from aquamatch import run_sentinel_pipeline
 
-download_imagery(download_scl=True)
+run_sentinel_pipeline(download_scl=True, steps="download")
 ```
 
 > The SCL asset can be used in Step 4 as a source of spatial waterbody information. 
-> Steps 2 and 3 can also be run together by passing mode="all" to the CLI.
+> Steps 2 and 3 can also be run together by passing `steps="all"`, or `mode="all"` to the CLI.
 
 **CLI equivalent:**
 
@@ -157,26 +158,22 @@ python aquamatch/sentinel_data.py --mode download \
 Runs [ACOLITE](https://github.com/acolite/acolite) on the downloaded SAFE folders to produce surface reflectance and water quality products (turbidity, SPM, chlorophyll-a, and others) as NetCDF files.
 
 ```python
-from aquamatch.acolite_spec import AcoliteConfig, IOConfig
+from aquamatch import run_acolite_pipeline
 
-cfg = AcoliteConfig(
+run_acolite_pipeline(
     acolite_executable="/path/to/acolite",
-    io=IOConfig(
-        inputfile="data/sentinel_downloads/S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD.SAFE",
-        output="data/acolite_output",
-        limit=(-33.25, -58.45, -33.17, -58.33),  # S, W, N, E
-    ),
-)
-
-result = cfg.run()
+    safe_dir="data/sentinel_downloads/S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD.SAFE",
+    output="data/acolite_output",
+    tile_config={"21HVD":
+                     {"limit": [-33.25, -58.45, -33.17, -58.33]}})
 ```
 
 For SCL-based water masking, use `with_scl_polygon()` to restrict processing to water pixels only:
 
 ```python
-result = cfg.with_scl_polygon(
-    "data/sentinel_downloads/scl/S2B_MSIL1C_20200513T135109_N0500_R024_T21HVD_20230430T050652_SCL.tif"
-).run()
+run_acolite_pipeline(
+    acolite_executable="/path/to/acolite",
+    use_scl=True)
 ```
 
 For batch processing across multiple scenes with per-tile spatial restrictions:
@@ -309,7 +306,6 @@ tiles:
   21HWD:
     # no entry — full scene processed
 ```
-
 
 > The tile ID is extracted automatically from the SAFE folder filename (e.g. `T21HUD` in `S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD_...SAFE`), so no manual mapping between files and tiles is needed.
 
