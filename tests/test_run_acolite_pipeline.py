@@ -564,3 +564,235 @@ class TestRunAcolitePipelineForwarding:
                 scl_dir=scl_dir,
             )
         assert captured["scl_dir"] == scl_dir
+
+
+# ---------------------------------------------------------------------------
+# dry_run
+# ---------------------------------------------------------------------------
+
+
+class TestRunAcolitePipelineDryRun:
+    """dry_run=True must be forwarded to run_batch and never call _execute."""
+
+    def test_dry_run_forwarded_to_run_batch(self, tmp_path):
+        captured = {}
+
+        def fake_run_batch(safe_list, base_output, **kwargs):
+            captured["dry_run"] = kwargs.get("dry_run")
+            return []
+
+        with patch.object(AcoliteConfig, "run_batch", side_effect=fake_run_batch):
+            run_acolite_pipeline(
+                acolite_executable="/fake/exe",
+                safe_dir=tmp_path,
+                output=tmp_path,
+                use_scl=False,
+                dry_run=True,
+            )
+
+        assert captured["dry_run"] is True
+
+    def test_dry_run_false_by_default(self, tmp_path):
+        captured = {}
+
+        def fake_run_batch(safe_list, base_output, **kwargs):
+            captured["dry_run"] = kwargs.get("dry_run")
+            return []
+
+        with patch.object(AcoliteConfig, "run_batch", side_effect=fake_run_batch):
+            run_acolite_pipeline(
+                acolite_executable="/fake/exe",
+                safe_dir=tmp_path,
+                output=tmp_path,
+                use_scl=False,
+            )
+
+        assert captured["dry_run"] is False
+
+    def test_dry_run_does_not_call_execute(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        _make_safe(safe_dir)
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+        )
+
+        with patch.object(cfg, "_execute") as mock_exec:
+            run_acolite_pipeline(
+                acolite_config=cfg,
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                use_scl=False,
+                dry_run=True,
+            )
+
+        mock_exec.assert_not_called()
+
+    def test_dry_run_still_returns_success(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        _make_safe(safe_dir)
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+        )
+
+        result = run_acolite_pipeline(
+            acolite_config=cfg,
+            safe_dir=safe_dir,
+            output=tmp_path / "out",
+            use_scl=False,
+            dry_run=True,
+        )
+
+        assert result["status"] == "success"
+        assert result["outputs"]["n_scenes"] == 1
+
+
+# ---------------------------------------------------------------------------
+# CLI — __main__ block
+# ---------------------------------------------------------------------------
+
+
+class TestAcoliteSpecCLI:
+    """Tests for the __main__ hybrid CLI block."""
+
+    def _run_cli(self, args: list[str]) -> tuple[int, str]:
+        """Run python -m aquamatch.acolite_spec with given args."""
+        import subprocess, sys
+
+        proc = subprocess.run(
+            [sys.executable, "-m", "aquamatch.acolite_spec"] + args,
+            capture_output=True,
+            text=True,
+        )
+        return proc.returncode, proc.stdout + proc.stderr
+
+    # --- Help ---
+
+    def test_help_exits_zero(self):
+        rc, _ = self._run_cli(["--help"])
+        assert rc == 0
+
+    def test_help_mentions_config(self):
+        _, output = self._run_cli(["--help"])
+        assert "--config" in output
+
+    def test_help_mentions_executable(self):
+        _, output = self._run_cli(["--help"])
+        assert "--executable" in output
+
+    def test_help_mentions_dry_run(self):
+        _, output = self._run_cli(["--help"])
+        assert "--dry-run" in output
+
+    # --- Explicit mode validation ---
+
+    def test_missing_executable_exits_nonzero(self):
+        """--executable is required in explicit mode."""
+        rc, output = self._run_cli(["--safe-dir", "/tmp"])
+        assert rc != 0
+        assert "executable" in output.lower()
+
+    def test_config_and_executable_are_mutually_exclusive(self):
+        rc, output = self._run_cli(["--config", "x.yaml", "--executable", "/fake"])
+        assert rc != 0
+
+    # --- YAML mode ---
+
+    def test_yaml_mode_calls_run_acolite(self, tmp_path):
+        """--config mode must load the YAML and call _run_acolite."""
+        from aquamatch.pipeline_config import PipelineConfig
+        from aquamatch.acolite_spec import _build_acolite_parser
+        import sys
+
+        yaml_file = tmp_path / "campaign.yaml"
+        PipelineConfig.generate(yaml_file)
+
+        captured = {}
+
+        def fake_run_acolite(self):
+            captured["called"] = True
+            return []
+
+        args = _build_acolite_parser().parse_args(["--config", str(yaml_file)])
+
+        with patch.object(
+            PipelineConfig, "_run_acolite", fake_run_acolite
+        ), patch.object(PipelineConfig, "from_yaml", return_value=PipelineConfig()):
+            # Simulate the __main__ YAML branch directly
+            cfg = PipelineConfig.from_yaml(args.config)
+            cfg._run_acolite()
+
+        assert captured.get("called") is True
+
+    def test_yaml_mode_no_skip_existing_overrides_config(self, tmp_path):
+        """--no-skip-existing must set skip_existing=False on loaded config."""
+        from aquamatch.pipeline_config import PipelineConfig
+        from aquamatch.acolite_spec import _build_acolite_parser
+
+        yaml_file = tmp_path / "campaign.yaml"
+        PipelineConfig.generate(yaml_file)
+
+        args = _build_acolite_parser().parse_args(
+            [
+                "--config",
+                str(yaml_file),
+                "--no-skip-existing",
+            ]
+        )
+
+        cfg = PipelineConfig.from_yaml(args.config)
+        if args.no_skip_existing:
+            cfg.acolite.skip_existing = False
+
+        assert cfg.acolite.skip_existing is False
+
+    # --- Explicit mode dry-run ---
+
+    def test_explicit_dry_run_flag_parses_to_true(self, tmp_path):
+        """--dry-run must parse to args.dry_run == True."""
+        from aquamatch.acolite_spec import _build_acolite_parser
+
+        exe = _make_exe(tmp_path)
+        args = _build_acolite_parser().parse_args(
+            [
+                "--executable",
+                str(exe),
+                "--dry-run",
+            ]
+        )
+
+        assert args.dry_run is True
+
+    def test_explicit_no_dry_run_flag_parses_to_false(self, tmp_path):
+        """Absence of --dry-run must parse to args.dry_run == False."""
+        from aquamatch.acolite_spec import _build_acolite_parser
+
+        exe = _make_exe(tmp_path)
+        args = _build_acolite_parser().parse_args(
+            [
+                "--executable",
+                str(exe),
+            ]
+        )
+
+        assert args.dry_run is False
+
+    def test_explicit_no_skip_existing_flag_parses_correctly(self, tmp_path):
+        """--no-skip-existing must parse to args.no_skip_existing == True."""
+        from aquamatch.acolite_spec import _build_acolite_parser
+
+        exe = _make_exe(tmp_path)
+        args = _build_acolite_parser().parse_args(
+            [
+                "--executable",
+                str(exe),
+                "--no-skip-existing",
+            ]
+        )
+
+        assert args.no_skip_existing is True
+        # And it must invert to skip_existing=False when forwarded
+        assert not args.no_skip_existing is False

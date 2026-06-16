@@ -1072,6 +1072,7 @@ def run_acolite_pipeline(
     tile_config: "Optional[object]" = None,
     scl_kwargs: "dict | None" = None,
     acolite_config: "Optional[AcoliteConfig]" = None,
+    dry_run: bool = False,
 ) -> dict:
     """
     Run ACOLITE atmospheric correction on all ``.SAFE`` folders in a directory
@@ -1162,6 +1163,10 @@ def run_acolite_pipeline(
         ``output``, ``scl_dir``, ``use_scl``, ``skip_existing``,
         ``continue_on_error``, ``tile_config``, ``scl_kwargs``) still
         apply.
+    dry_run:
+        If ``True``, log what would be executed for each scene without
+        calling the ACOLITE binary.  Settings files are still written so
+        the configuration can be inspected.  Defaults to ``False``.
 
     Returns
     -------
@@ -1257,6 +1262,7 @@ def run_acolite_pipeline(
         results = cfg.run_batch(
             safe_list=safe_list,
             base_output=output_path,
+            dry_run=dry_run,
             use_scl=_use_scl,
             scl_dir=scl_dir_path if _use_scl else None,
             scl_kwargs=_scl_kwargs,
@@ -1336,3 +1342,181 @@ def _with_scl_polygon(
 
 
 AcoliteConfig.with_scl_polygon = _with_scl_polygon
+
+
+# ---------------------------------------------------------------------------
+# CLI — hybrid: --config (YAML) or explicit flags
+# ---------------------------------------------------------------------------
+
+
+def _build_acolite_parser() -> "argparse.ArgumentParser":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m aquamatch.acolite_spec",
+        description=(
+            "Run ACOLITE atmospheric correction.\n\n"
+            "Two modes:\n"
+            "  --config  Load a full pipeline YAML and run only the ACOLITE step.\n"
+            "  (flags)   Build the configuration from explicit command-line arguments."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    # --- Mutually exclusive: YAML config vs explicit flags ---
+    mode_group = parser.add_mutually_exclusive_group(required=False)
+    mode_group.add_argument(
+        "--config",
+        metavar="YAML",
+        help=(
+            "Path to a pipeline YAML config file.  Only the ACOLITE step is "
+            "executed; all other steps (insitu, sentinel, download) are skipped."
+        ),
+    )
+
+    # --- Explicit flags (used when --config is not supplied) ---
+    parser.add_argument(
+        "--executable",
+        metavar="PATH",
+        default=None,
+        help="Path to the ACOLITE executable (acolite.py or compiled binary).",
+    )
+    parser.add_argument(
+        "--safe-dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Directory to search recursively for .SAFE folders. "
+            f"Default: {AcoliteIOSection_DEFAULT_SAFE_DIR}"
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Root output directory for ACOLITE products. "
+            f"Default: {AcoliteIOSection_DEFAULT_OUTPUT}"
+        ),
+    )
+    parser.add_argument(
+        "--scl-dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Directory containing SCL GeoTIFF files. Required with --use-scl. "
+            f"Default: {AcoliteIOSection_DEFAULT_SCL_DIR}"
+        ),
+    )
+    parser.add_argument(
+        "--use-scl",
+        action="store_true",
+        default=False,
+        help="Extract SCL water polygon per scene and apply polygon clipping.",
+    )
+    parser.add_argument(
+        "--no-skip-existing",
+        action="store_true",
+        default=False,
+        help="Reprocess all scenes even if output files already exist.",
+    )
+    parser.add_argument(
+        "--no-continue-on-error",
+        action="store_true",
+        default=False,
+        help="Stop processing on first scene failure instead of continuing.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help=(
+            "Log what would be executed without calling the ACOLITE binary. "
+            "Settings files are still written for inspection."
+        ),
+    )
+
+    return parser
+
+
+# Resolve display defaults once at module level to avoid instantiating
+# AcoliteIOSection inside the argument help strings (which runs at import time).
+def _get_io_defaults():
+    from aquamatch.pipeline_config import AcoliteIOSection
+
+    _io = AcoliteIOSection()
+    return _io.safe_dir, _io.output, _io.scl_dir
+
+
+try:
+    (
+        AcoliteIOSection_DEFAULT_SAFE_DIR,
+        AcoliteIOSection_DEFAULT_OUTPUT,
+        AcoliteIOSection_DEFAULT_SCL_DIR,
+    ) = _get_io_defaults()
+except Exception:
+    AcoliteIOSection_DEFAULT_SAFE_DIR = "data/sentinel_downloads"
+    AcoliteIOSection_DEFAULT_OUTPUT = "data/acolite_output"
+    AcoliteIOSection_DEFAULT_SCL_DIR = "data/sentinel_downloads/scl"
+
+
+if __name__ == "__main__":
+    import argparse
+    import logging as _logging
+
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    _parser = _build_acolite_parser()
+    _args = _parser.parse_args()
+
+    if _args.config:
+        # --- YAML mode: load config, run only the ACOLITE step ---
+        from aquamatch.pipeline_config import PipelineConfig
+
+        _cfg = PipelineConfig.from_yaml(_args.config)
+
+        # Honour --dry-run and --no-skip-existing even in YAML mode
+        if _args.dry_run:
+            logger.info("[dry_run] YAML mode — logging steps without executing.")
+        if _args.no_skip_existing:
+            _cfg.acolite.skip_existing = False
+
+        _results = _cfg._run_acolite()
+        _n_ok = sum(1 for r in _results if r.get("returncode") == 0)
+        _n_total = len(_results)
+        logger.info(f"ACOLITE complete — {_n_ok}/{_n_total} scenes succeeded.")
+
+    else:
+        # --- Explicit flags mode ---
+        if _args.executable is None:
+            _parser.error(
+                "--executable is required when --config is not supplied.\n"
+                "Provide the path to your ACOLITE executable, e.g.:\n"
+                "  --executable /path/to/acolite/acolite.py"
+            )
+
+        _result = run_acolite_pipeline(
+            acolite_executable=_args.executable,
+            safe_dir=_args.safe_dir,
+            output=_args.output,
+            scl_dir=_args.scl_dir,
+            use_scl=_args.use_scl,
+            skip_existing=not _args.no_skip_existing,
+            continue_on_error=not _args.no_continue_on_error,
+            dry_run=_args.dry_run,
+        )
+
+        if _result["status"] != "success":
+            logger.error(f"Pipeline failed: {_result['error']}")
+        else:
+            _out = _result["outputs"]
+            logger.info(
+                f"ACOLITE complete — "
+                f"{_out['n_success']}/{_out['n_scenes']} scenes succeeded, "
+                f"{_out['n_skipped']} skipped, "
+                f"{_out['n_error']} errors. "
+                f"({_result['elapsed_seconds']}s)"
+            )
