@@ -403,7 +403,7 @@ def run_insitu_pipeline(
         * ``n_unique`` — rows written to the unique-records CSV
           (after duplicate removal on ``date + s2_tile``).
         * ``campaigns_csv`` — resolved path of the campaigns output.
-        * ``unique_csv`` — resolved path of the unique-records output.
+        * ``csv`` — resolved path of the unique-records output.
 
     Raises
     ------
@@ -506,7 +506,7 @@ def run_insitu_pipeline(
                 "n_merged": len(merged_df),
                 "n_unique": len(df_unique),
                 "campaigns_csv": out_campaigns,
-                "unique_csv": out_unique,
+                "csv": out_unique,
             },
             "error": None,
             "elapsed_seconds": round(time.monotonic() - t0, 2),

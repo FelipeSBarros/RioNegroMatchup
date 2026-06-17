@@ -307,7 +307,7 @@ class TestConverters:
         cfg = PipelineConfig()
         args = cfg.to_sentinel_args()
         for key in (
-            "unique_csv",
+            "csv",
             "catalog_json",
             "time_delta",
             "cloud_cover",

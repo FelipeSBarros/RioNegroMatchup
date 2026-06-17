@@ -457,7 +457,7 @@ def run_download(
 
 
 def run_sentinel_pipeline(
-    unique_csv: "Path | str | None" = None,
+    csv: "Path | str | None" = None,
     catalog_json: "Path | str | None" = None,
     output_dir: "Path | str | None" = None,
     time_delta: int | None = None,
@@ -481,7 +481,7 @@ def run_sentinel_pipeline(
 
     Parameters
     ----------
-    unique_csv:
+    csv:
         Path to the deduplicated in situ CSV produced by
         :func:`~aquamatch.insitu_data.run_insitu_pipeline`.
         Required for ``steps="catalog"`` or ``"all"``.
@@ -545,7 +545,7 @@ def run_sentinel_pipeline(
     Catalog only, with custom search parameters::
 
         result = run_sentinel_pipeline(
-            unique_csv="data/monitoring_data/campaigns_unique_data.csv",
+            csv="data/monitoring_data/campaigns_unique_data.csv",
             catalog_json="data/sentinel_downloads/sentinel_catalog.json",
             time_delta=2,
             cloud_cover=20,
@@ -575,7 +575,7 @@ def run_sentinel_pipeline(
     _d = DownloadSection()
 
     unique_csv_path = (
-        Path(unique_csv) if unique_csv is not None else Path(_s.unique_csv)
+        Path(csv) if csv is not None else Path(_s.csv)
     )
     catalog_json_path = (
         Path(catalog_json) if catalog_json is not None else Path(_s.catalog_json)
@@ -686,7 +686,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     result = run_sentinel_pipeline(
-        unique_csv=args.csv,
+        csv=args.csv,
         catalog_json=args.output_json,
         output_dir=args.output,
         time_delta=args.time_delta,

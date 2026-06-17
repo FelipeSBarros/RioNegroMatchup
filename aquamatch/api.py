@@ -44,7 +44,7 @@ Example — full pipeline in a script::
 
     if r1["status"] == "success":
         r2 = run_sentinel_pipeline(
-            unique_csv=r1["outputs"]["unique_csv"],
+            csv=r1["outputs"]["csv"],
             time_delta=2,
             cloud_cover=20,
         )

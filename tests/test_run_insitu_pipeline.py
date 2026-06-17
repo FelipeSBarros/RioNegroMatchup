@@ -163,7 +163,7 @@ class TestRunInsituPipeline:
         )
 
         assert result["outputs"]["campaigns_csv"] == out_campaigns
-        assert result["outputs"]["unique_csv"] == out_unique
+        assert result["outputs"]["csv"] == out_unique
 
     def test_elapsed_seconds_is_non_negative_float(self, tmp_path):
         stations_file = tmp_path / "stations.xlsx"
@@ -321,7 +321,7 @@ class TestRunInsituPipeline:
         )
         # Verify the returned paths are Path objects (not bare strings)
         assert hasattr(result["outputs"]["campaigns_csv"], "suffix")
-        assert hasattr(result["outputs"]["unique_csv"], "suffix")
+        assert hasattr(result["outputs"]["csv"], "suffix")
 
     # --- Error handling ---
 
