@@ -460,11 +460,11 @@ def run_sentinel_pipeline(
     unique_csv: "Path | str | None" = None,
     catalog_json: "Path | str | None" = None,
     output_dir: "Path | str | None" = None,
-    time_delta_days: int | None = None,
-    cloud_cover_max: int | None = None,
+    time_delta: int | None = None,
+    cloud_cover: int | None = None,
     only_first: bool | None = None,
     download_scl: bool | None = None,
-    steps: str = "all",
+    mode: str = "all",  # todo change to 'mode'
 ) -> dict:
     """
     Run the Sentinel-2 catalog and/or download pipeline and return a status dict.
@@ -493,10 +493,10 @@ def run_sentinel_pipeline(
     output_dir:
         Root directory for downloaded SAFE products and SCL files.
         Defaults to ``data/sentinel_downloads``.
-    time_delta_days:
+    time_delta:
         Search window in days around each field date (±N days).
         Defaults to ``1``.
-    cloud_cover_max:
+    cloud_cover:
         Maximum cloud cover percentage for scene selection.
         Defaults to ``10``.
     only_first:
@@ -506,7 +506,7 @@ def run_sentinel_pipeline(
         If ``True``, download the SCL (Scene Classification Layer) GeoTIFF
         alongside each SAFE product.
         Defaults to ``True``.
-    steps:
+    mode:
         Which pipeline stages to run.  One of ``"all"``, ``"catalog"``,
         or ``"download"``.  Defaults to ``"all"``.
 
@@ -547,8 +547,8 @@ def run_sentinel_pipeline(
         result = run_sentinel_pipeline(
             unique_csv="data/monitoring_data/campaigns_unique_data.csv",
             catalog_json="data/sentinel_downloads/sentinel_catalog.json",
-            time_delta_days=2,
-            cloud_cover_max=20,
+            time_delta=2,
+            cloud_cover=20,
             steps="catalog",
         )
 
@@ -563,9 +563,9 @@ def run_sentinel_pipeline(
     import time
 
     valid_steps = {"all", "catalog", "download"}
-    if steps not in valid_steps:
+    if mode not in valid_steps:
         raise ValueError(
-            f"Invalid steps value '{steps}'. Must be one of: {sorted(valid_steps)}"
+            f"Invalid mode value '{mode}'. Must be one of: {sorted(valid_steps)}"
         )
 
     # --- Resolve defaults from dataclass sections (single source of truth) ---
@@ -583,8 +583,8 @@ def run_sentinel_pipeline(
     output_dir_path = (
         Path(output_dir) if output_dir is not None else Path(_d.output_dir)
     )
-    time_delta = time_delta_days if time_delta_days is not None else _s.time_delta_days
-    cloud_cover = cloud_cover_max if cloud_cover_max is not None else _s.cloud_cover_max
+    time_delta = time_delta if time_delta is not None else _s.time_delta
+    cloud_cover = cloud_cover if cloud_cover is not None else _s.cloud_cover
     _only_first = only_first if only_first is not None else _d.only_first
     _download_scl = download_scl if download_scl is not None else _d.download_scl
 
@@ -592,7 +592,7 @@ def run_sentinel_pipeline(
     outputs = {}
 
     try:
-        if steps in ("catalog", "all"):
+        if mode in ("catalog", "all"):
             logger.info(
                 f"[sentinel] Building catalog from {unique_csv_path} "
                 f"→ {catalog_json_path}"
@@ -605,7 +605,7 @@ def run_sentinel_pipeline(
             )
             outputs["catalog_json"] = catalog_json_path
 
-        if steps in ("download", "all"):
+        if mode in ("download", "all"):
             logger.info(
                 f"[sentinel] Downloading products from {catalog_json_path} "
                 f"→ {output_dir_path}"
@@ -689,11 +689,11 @@ if __name__ == "__main__":
         unique_csv=args.csv,
         catalog_json=args.output_json,
         output_dir=args.output,
-        time_delta_days=args.time_delta,
-        cloud_cover_max=args.cloud_cover,
+        time_delta=args.time_delta,
+        cloud_cover=args.cloud_cover,
         only_first=args.only_first,
         download_scl=args.download_scl,
-        steps=args.mode,
+        mode=args.mode,
     )
     if result["status"] != "success":
         logger.error(f"Pipeline failed: {result['error']}")

@@ -363,14 +363,14 @@ tiles:
             """\
 campaign_name: test
 sentinel:
-  time_delta_days: 3
+  time_delta: 3
 tiles:
   21HUD:
     polygon: data/polygons/21HUD.geojson
 """,
         )
         cfg = PipelineConfig.from_yaml(p)
-        assert cfg.sentinel.time_delta_days == 3
+        assert cfg.sentinel.time_delta == 3
         assert cfg.tiles.get("21HUD").polygon == "data/polygons/21HUD.geojson"
 
     def test_unknown_top_level_key_still_raises(self, tmp_path):
