@@ -51,7 +51,7 @@ class InsituSection:
 class SentinelSection:
     enabled: bool = True
     catalog_json: str = "data/sentinel_downloads/sentinel_catalog.json"
-    unique_csv: str = "data/monitoring_data/campaigns_unique_data.csv"
+    csv: str = "data/monitoring_data/campaigns_unique_data.csv"
     time_delta: int = 1
     cloud_cover: int = 10
 
@@ -406,7 +406,7 @@ sentinel:
   enabled: true
 
   catalog_json: data/sentinel_downloads/sentinel_catalog.json
-  unique_csv: data/monitoring_data/campaigns_unique_data.csv
+  csv: data/monitoring_data/campaigns_unique_data.csv
 
   time_delta: 1                # ±N days around each field date (int ≥ 0)
   cloud_cover: 10               # Maximum cloud cover percentage (0–100)
@@ -804,12 +804,12 @@ tiles: {}
         Returns
         -------
         dict
-            Keys for catalog building (``unique_csv``, ``catalog_json``,
+            Keys for catalog building (``csv``, ``catalog_json``,
             ``time_delta``, ``cloud_cover``) and download
             (``output_dir``, ``only_first``, ``download_scl``).
         """
         return {
-            "unique_csv": Path(self.sentinel.unique_csv),
+            "csv": Path(self.sentinel.csv),
             "catalog_json": Path(self.sentinel.catalog_json),
             "time_delta": self.sentinel.time_delta,
             "cloud_cover": self.sentinel.cloud_cover,
@@ -972,7 +972,7 @@ tiles: {}
 
         args = self.to_sentinel_args()
         build_catalog(
-            csv_file=args["unique_csv"],
+            csv_file=args["csv"],
             output_json=args["catalog_json"],
             time_delta=args["time_delta"],
             cloud_cover=args["cloud_cover"],

@@ -185,11 +185,11 @@ class TestRunSentinelPipelineDefaults:
 
     def test_none_unique_csv_resolves_to_sentinel_section_default(self):
         with patch("aquamatch.pipeline_config.SentinelSection") as mock_section:
-            mock_section.return_value.unique_csv = "/tmp/nonexistent_default.csv"
+            mock_section.return_value.csv = "/tmp/nonexistent_default.csv"
             mock_section.return_value.catalog_json = "/tmp/catalog.json"
 
             result = run_sentinel_pipeline(
-                unique_csv=None,
+                csv=None,
                 mode="catalog",
             )
 
@@ -398,7 +398,7 @@ class TestRunSentinelPipelineCatalogStep:
             ],
         ):
             run_sentinel_pipeline(
-                unique_csv=unique_csv,
+                csv=unique_csv,
                 catalog_json=catalog_file,
                 mode="catalog",
             )
@@ -427,7 +427,7 @@ class TestRunSentinelPipelineCatalogStep:
             ],
         ):
             run_sentinel_pipeline(
-                unique_csv=unique_csv,
+                csv=unique_csv,
                 catalog_json=catalog_file,
                 mode="catalog",
             )
@@ -458,7 +458,7 @@ class TestRunSentinelPipelineCatalogStep:
             ],
         ):
             result = run_sentinel_pipeline(
-                unique_csv=unique_csv,
+                csv=unique_csv,
                 catalog_json=catalog_file,
                 mode="catalog",
             )
@@ -487,7 +487,7 @@ class TestRunSentinelPipelineCatalogStep:
             patch("aquamatch.sentinel_data.run_download") as mock_run_download,
         ):
             run_sentinel_pipeline(
-                unique_csv=unique_csv,
+                csv=unique_csv,
                 catalog_json=catalog_file,
                 mode="catalog",
             )
@@ -496,7 +496,7 @@ class TestRunSentinelPipelineCatalogStep:
 
     def test_missing_unique_csv_returns_error(self, tmp_path):
         result = run_sentinel_pipeline(
-            unique_csv=tmp_path / "nonexistent.csv",
+            csv=tmp_path / "nonexistent.csv",
             catalog_json=tmp_path / "catalog.json",
             mode="catalog",
         )
@@ -561,7 +561,7 @@ class TestRunSentinelPipelineStatusDict:
             ),
         ):
             result = run_sentinel_pipeline(
-                unique_csv=unique_csv,
+                csv=unique_csv,
                 catalog_json=catalog_file,
                 output_dir=tmp_path,
                 mode="all",
