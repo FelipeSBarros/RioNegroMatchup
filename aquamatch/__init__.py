@@ -5,7 +5,7 @@ Python package for matching Sentinel-2 satellite imagery with in situ
 water quality measurements, applying atmospheric correction, and
 validating remote sensing water quality products.
 
-The three pipeline steps are available directly from the package::
+The three pipeline mode are available directly from the package::
 
     from aquamatch import (
         run_insitu_pipeline,

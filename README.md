@@ -90,10 +90,10 @@ Searches for Sentinel-2 L1C scenes that match each field date and location from 
 from aquamatch import run_sentinel_pipeline
 
 run_sentinel_pipeline(
-    csv="data/monitoring_data/campaigns_unique_data.csv",
+    unique_csv="data/monitoring_data/campaigns_unique_data.csv",
     time_delta=2,
     cloud_cover=20,
-    steps="catalog"
+    mode="catalog"
 )
 ```
 
@@ -138,7 +138,7 @@ Download the SAFE products and SCL assets (the latter if desired, using `--downl
 ```python
 from aquamatch import run_sentinel_pipeline
 
-run_sentinel_pipeline(download_scl=True, steps="download")
+run_sentinel_pipeline(download_scl=True, mode="download")
 ```
 
 > The SCL asset can be used in Step 4 as a source of spatial waterbody information. 
@@ -247,8 +247,8 @@ insitu:
 
 sentinel:
   enabled: true
-  time_delta_days: 2
-  cloud_cover_max: 20
+  time_delta: 2
+  cloud_cover: 20
 
 acolite:
   enabled: true
