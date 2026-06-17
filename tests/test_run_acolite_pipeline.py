@@ -567,6 +567,235 @@ class TestRunAcolitePipelineForwarding:
 
 
 # ---------------------------------------------------------------------------
+# limit and polygon — global spatial restriction
+# ---------------------------------------------------------------------------
+
+
+class TestRunAcolitePipelineLimitPolygon:
+    """limit and polygon apply a single spatial restriction to all scenes."""
+
+    def _capture_settings(self, cfg):
+        """
+        Capture the settings dict at the moment ACOLITE serialises the config.
+        Patches to_settings_dict on the instance so the capture happens
+        regardless of whether _execute is also patched.
+        """
+        captured = {}
+        original = cfg.to_settings_dict
+
+        def fake_to_settings_dict():
+            d = original()
+            captured["limit"] = d.get("limit")
+            captured["polygon"] = d.get("polygon")
+            captured["polygon_clip"] = d.get("polygon_clip")
+            return d
+
+        cfg.to_settings_dict = fake_to_settings_dict
+        return captured
+
+    # --- Validation ---
+
+    def test_limit_and_polygon_together_raise(self, tmp_path):
+        with pytest.raises(ValueError, match="either 'limit' or 'polygon'"):
+            run_acolite_pipeline(
+                acolite_executable="/fake/exe",
+                safe_dir=tmp_path,
+                output=tmp_path,
+                limit=(-33.25, -58.45, -33.17, -58.33),
+                polygon="data/polygons/area.geojson",
+            )
+
+    def test_limit_and_tile_config_together_raise(self, tmp_path):
+        from aquamatch.pipeline_config import TilesSection
+
+        with pytest.raises(ValueError, match="tile_config"):
+            run_acolite_pipeline(
+                acolite_executable="/fake/exe",
+                safe_dir=tmp_path,
+                output=tmp_path,
+                limit=(-33.25, -58.45, -33.17, -58.33),
+                tile_config=TilesSection(),
+            )
+
+    def test_polygon_and_tile_config_together_raise(self, tmp_path):
+        from aquamatch.pipeline_config import TilesSection
+
+        with pytest.raises(ValueError, match="tile_config"):
+            run_acolite_pipeline(
+                acolite_executable="/fake/exe",
+                safe_dir=tmp_path,
+                output=tmp_path,
+                polygon="data/polygons/area.geojson",
+                tile_config=TilesSection(),
+            )
+
+    # --- limit applied to io ---
+
+    def test_limit_applied_to_cfg_io(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        _make_safe(safe_dir)
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+        )
+        captured = self._capture_settings(cfg)
+
+        with patch.object(
+            cfg,
+            "_execute",
+            return_value=_fake_execute_result(safe_dir / _SAFE_NAME, tmp_path / "out"),
+        ):
+            run_acolite_pipeline(
+                acolite_config=cfg,
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                use_scl=False,
+                limit=(-33.25, -58.45, -33.17, -58.33),
+            )
+
+        assert captured["limit"] == "-33.25,-58.45,-33.17,-58.33"
+        assert captured.get("polygon") is None
+        assert captured.get("polygon_clip") is None
+
+    def test_limit_is_converted_to_tuple(self, tmp_path):
+        """limit passed as a list must be serialised identically to a tuple."""
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        _make_safe(safe_dir)
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+        )
+        captured = self._capture_settings(cfg)
+
+        with patch.object(
+            cfg,
+            "_execute",
+            return_value=_fake_execute_result(safe_dir / _SAFE_NAME, tmp_path / "out"),
+        ):
+            run_acolite_pipeline(
+                acolite_config=cfg,
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                use_scl=False,
+                limit=[-33.25, -58.45, -33.17, -58.33],
+            )
+
+        assert captured["limit"] == "-33.25,-58.45,-33.17,-58.33"
+
+    # --- polygon applied to io ---
+
+    def test_polygon_applied_to_cfg_io(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        _make_safe(safe_dir)
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+        )
+        captured = self._capture_settings(cfg)
+
+        with patch.object(
+            cfg,
+            "_execute",
+            return_value=_fake_execute_result(safe_dir / _SAFE_NAME, tmp_path / "out"),
+        ):
+            run_acolite_pipeline(
+                acolite_config=cfg,
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                use_scl=False,
+                polygon="data/polygons/study_area.geojson",
+            )
+
+        assert captured["polygon"] == "data/polygons/study_area.geojson"
+        assert captured["polygon_clip"] == "true"
+        assert captured.get("limit") is None
+
+    def test_polygon_accepts_string_path(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        _make_safe(safe_dir)
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+        )
+        captured = self._capture_settings(cfg)
+
+        poly_path = str(tmp_path / "area.geojson")
+        with patch.object(
+            cfg,
+            "_execute",
+            return_value=_fake_execute_result(safe_dir / _SAFE_NAME, tmp_path / "out"),
+        ):
+            run_acolite_pipeline(
+                acolite_config=cfg,
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                use_scl=False,
+                polygon=poly_path,
+            )
+
+        assert captured["polygon"] == poly_path
+
+    # --- no restriction when both are None ---
+
+    def test_no_limit_or_polygon_leaves_io_unrestricted(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        _make_safe(safe_dir)
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+        )
+        captured = self._capture_settings(cfg)
+
+        with patch.object(
+            cfg,
+            "_execute",
+            return_value=_fake_execute_result(safe_dir / _SAFE_NAME, tmp_path / "out"),
+        ):
+            run_acolite_pipeline(
+                acolite_config=cfg,
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                use_scl=False,
+            )
+
+        assert captured.get("limit") is None
+        assert captured.get("polygon") is None
+        assert captured.get("polygon_clip") is None
+
+    # --- status dict unaffected ---
+
+    def test_limit_run_returns_success(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe = _make_safe(safe_dir)
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+        )
+
+        with patch.object(
+            cfg,
+            "_execute",
+            return_value=_fake_execute_result(safe, tmp_path / "out" / _SCENE_STEM),
+        ):
+            result = run_acolite_pipeline(
+                acolite_config=cfg,
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                use_scl=False,
+                limit=(-33.25, -58.45, -33.17, -58.33),
+            )
+
+        assert result["status"] == "success"
+        assert result["outputs"]["n_success"] == 1
+
+
+# ---------------------------------------------------------------------------
 # dry_run
 # ---------------------------------------------------------------------------
 

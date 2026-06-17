@@ -826,9 +826,18 @@ class AcoliteConfig:
                 self.io,
                 inputfile=str(safe_path),
                 output=str(image_output),
-                limit=tile_limit,
-                polygon=tile_polygon,
-                polygon_clip=tile_polygon is not None,
+                limit=tile_limit if tile_limit is not None else original_io.limit,
+                polygon=(
+                    tile_polygon if tile_polygon is not None else original_io.polygon
+                ),
+                polygon_clip=(
+                    tile_polygon is not None
+                    or (
+                        tile_limit is None
+                        and original_io.polygon is not None
+                        and original_io.polygon_clip
+                    )
+                ),
             )
 
             scl_used = False
@@ -1073,6 +1082,8 @@ def run_acolite_pipeline(
     scl_kwargs: "dict | None" = None,
     acolite_config: "Optional[AcoliteConfig]" = None,
     dry_run: bool = False,
+    limit: "Optional[tuple[float, float, float, float]]" = None,
+    polygon: "Optional[str]" = None,
 ) -> dict:
     """
     Run ACOLITE atmospheric correction on all ``.SAFE`` folders in a directory
@@ -1167,6 +1178,14 @@ def run_acolite_pipeline(
         If ``True``, log what would be executed for each scene without
         calling the ACOLITE binary.  Settings files are still written so
         the configuration can be inspected.  Defaults to ``False``.
+    limit:
+        Global bounding box ``(south, west, north, east)`` in decimal
+        degrees applied to **every** scene in ``safe_dir``.  Mutually
+        exclusive with ``polygon`` and ``tile_config``.
+    polygon:
+        Path to a GeoJSON or WKT file defining a region of interest
+        applied to **every** scene in ``safe_dir``.  Mutually exclusive
+        with ``limit`` and ``tile_config``.
 
     Returns
     -------
@@ -1195,6 +1214,38 @@ def run_acolite_pipeline(
         )
         print(result["outputs"]["n_success"])
 
+    Apply a bounding box to all scenes::
+
+        result = run_acolite_pipeline(
+            acolite_executable="/path/to/acolite/acolite.py",
+            safe_dir="data/sentinel_downloads",
+            output="data/acolite_output",
+            limit=(-33.25, -58.45, -33.17, -58.33),
+        )
+
+    Apply a polygon to all scenes::
+
+        result = run_acolite_pipeline(
+            acolite_executable="/path/to/acolite/acolite.py",
+            safe_dir="data/sentinel_downloads",
+            output="data/acolite_output",
+            polygon="data/polygons/study_area.geojson",
+        )
+
+    Per-tile restrictions (different limits per MGRS tile)::
+
+        from aquamatch.pipeline_config import TilesSection
+        tiles = TilesSection.from_dict({
+            "21HUD": {"limit": [-34.2, -56.8, -33.0, -55.1]},
+            "21HVD": {"polygon": "data/polygons/21HVD.geojson"},
+        })
+        result = run_acolite_pipeline(
+            acolite_executable="/path/to/acolite/acolite.py",
+            safe_dir="data/sentinel_downloads",
+            output="data/acolite_output",
+            tile_config=tiles,
+        )
+
     Force reprocess all scenes::
 
         result = run_acolite_pipeline(
@@ -1210,7 +1261,17 @@ def run_acolite_pipeline(
         AcoliteIOSection,
         SclSection,
         TilesSection,
+        TileEntry,
     )
+
+    # --- Validate mutually exclusive spatial arguments ---
+    if limit is not None and polygon is not None:
+        raise ValueError("Specify either 'limit' or 'polygon', not both.")
+    if (limit is not None or polygon is not None) and tile_config is not None:
+        raise ValueError(
+            "Specify either 'limit'/'polygon' (global restriction) or "
+            "'tile_config' (per-tile restriction), not both."
+        )
 
     # --- Resolve defaults from dataclass sections (single source of truth) ---
     _a = AcoliteSection()
@@ -1226,6 +1287,23 @@ def run_acolite_pipeline(
         continue_on_error if continue_on_error is not None else _a.continue_on_error
     )
     _tile_config = tile_config if tile_config is not None else TilesSection()
+
+    # --- Wrap limit / polygon into a global TilesSection ---
+    # When limit or polygon is set, every scene in safe_dir receives the same
+    # restriction.  run_batch applies tile_config per-tile — using the sentinel
+    # value "_GLOBAL_" ensures every SAFE folder matches regardless of its
+    # MGRS tile code, because we override run_batch's tile lookup below.
+    # Instead we build the AcoliteConfig io directly with the restriction and
+    # leave tile_config empty, which is simpler and avoids tile ID matching.
+    if limit is not None:
+        _global_limit = tuple(limit)
+        _global_polygon = None
+    elif polygon is not None:
+        _global_limit = None
+        _global_polygon = str(polygon)
+    else:
+        _global_limit = None
+        _global_polygon = None
     _scl_kwargs = (
         scl_kwargs
         if scl_kwargs is not None
@@ -1251,6 +1329,15 @@ def run_acolite_pipeline(
             cfg = AcoliteConfig(
                 acolite_executable=_executable,
                 io=IOConfig(inputfile="", output=str(output_path)),
+            )
+
+        # --- Apply global spatial restriction if provided ---
+        if _global_limit is not None or _global_polygon is not None:
+            cfg.io = replace(
+                cfg.io,
+                limit=_global_limit,
+                polygon=_global_polygon,
+                polygon_clip=_global_polygon is not None,
             )
 
         # --- Discover .SAFE folders ---

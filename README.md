@@ -164,8 +164,7 @@ run_acolite_pipeline(
     acolite_executable="/path/to/acolite",
     safe_dir="data/sentinel_downloads/S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD.SAFE",
     output="data/acolite_output",
-    tile_config={"21HVD":
-                     {"limit": [-33.25, -58.45, -33.17, -58.33]}})
+    limit = [-33.25, -58.45, -33.17, -58.33])
 ```
 
 For SCL-based water masking, use `with_scl_polygon()` to restrict processing to water pixels only:
