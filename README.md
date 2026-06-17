@@ -90,7 +90,7 @@ Searches for Sentinel-2 L1C scenes that match each field date and location from 
 from aquamatch import run_sentinel_pipeline
 
 run_sentinel_pipeline(
-    csv="data/monitoring_data/campaigns_unique_data.csv",
+    unique_csv="data/monitoring_data/campaigns_unique_data.csv",
     time_delta=2,
     cloud_cover=20,
     mode="catalog"
