@@ -87,7 +87,7 @@ class TestRoundTrip:
 
         assert cfg.campaign_name == defaults.campaign_name
         assert cfg.insitu.skip_clean == defaults.insitu.skip_clean
-        assert cfg.sentinel.time_delta == defaults.sentinel.time_delta
+        assert cfg.sentinel.time_delta_days == defaults.sentinel.time_delta_days
         assert cfg.download.only_first == defaults.download.only_first
         assert cfg.acolite.low_memory == defaults.acolite.low_memory
         assert (
@@ -103,8 +103,8 @@ campaign_name: test_campaign
 insitu:
   enabled: false
 sentinel:
-  time_delta: 3
-  cloud_cover: 20
+  time_delta_days: 3
+  cloud_cover_max: 20
 acolite:
   low_memory: true
   scl:
@@ -114,8 +114,8 @@ acolite:
         cfg = PipelineConfig.from_yaml(p)
         assert cfg.campaign_name == "test_campaign"
         assert cfg.insitu.enabled is False
-        assert cfg.sentinel.time_delta == 3
-        assert cfg.sentinel.cloud_cover == 20
+        assert cfg.sentinel.time_delta_days == 3
+        assert cfg.sentinel.cloud_cover_max == 20
         assert cfg.acolite.low_memory is True
         assert cfg.acolite.scl.min_area_m2 == 1000.0
 
@@ -309,8 +309,8 @@ class TestConverters:
         for key in (
             "unique_csv",
             "catalog_json",
-            "time_delta",
-            "cloud_cover",
+            "time_delta_days",
+            "cloud_cover_max",
             "output_dir",
             "only_first",
             "download_scl",
@@ -426,7 +426,7 @@ Covers:
   - _run_acolite passes empty TilesSection when no tiles configured
   - tile_config flows correctly into run_batch (polygon, limit, none)
   - sentinel search parameters are already wired through to_sentinel_args
-    (smoke-tests for time_delta and cloud_cover)
+    (smoke-tests for time_delta_days and cloud_cover_max)
 """
 
 from pathlib import Path
@@ -570,23 +570,23 @@ class TestRunAcoliteTileConfigWiring:
 
 class TestSentinelArgsWiring:
     """
-    Confirm that time_delta and cloud_cover flow from
+    Confirm that time_delta_days and cloud_cover_max flow from
     PipelineConfig → to_sentinel_args() → _run_sentinel_catalog().
     These were already wired before step 5; tests here guard against
     regression.
     """
 
-    def test_time_delta_in_sentinel_args(self):
+    def test_time_delta_days_in_sentinel_args(self):
         cfg = PipelineConfig()
-        cfg.sentinel.time_delta = 3
+        cfg.sentinel.time_delta_days = 3
         args = cfg.to_sentinel_args()
-        assert args["time_delta"] == 3
+        assert args["time_delta_days"] == 3
 
-    def test_cloud_cover_in_sentinel_args(self):
+    def test_cloud_cover_max_in_sentinel_args(self):
         cfg = PipelineConfig()
-        cfg.sentinel.cloud_cover = 25
+        cfg.sentinel.cloud_cover_max = 25
         args = cfg.to_sentinel_args()
-        assert args["cloud_cover"] == 25
+        assert args["cloud_cover_max"] == 25
 
     def test_sentinel_args_forwarded_to_build_catalog(self, tmp_path):
         csv = tmp_path / "unique.csv"
@@ -594,8 +594,8 @@ class TestSentinelArgsWiring:
         catalog_json = tmp_path / "catalog.json"
 
         cfg = PipelineConfig()
-        cfg.sentinel.time_delta = 2
-        cfg.sentinel.cloud_cover = 15
+        cfg.sentinel.time_delta_days = 2
+        cfg.sentinel.cloud_cover_max = 15
         cfg.sentinel.unique_csv = str(csv)
         cfg.sentinel.catalog_json = str(catalog_json)
 
@@ -609,5 +609,5 @@ class TestSentinelArgsWiring:
             "aquamatch.pipeline_config.PipelineConfig._run_sentinel_catalog",
         ):
             args = cfg.to_sentinel_args()
-            assert args["time_delta"] == 2
-            assert args["cloud_cover"] == 15
+            assert args["time_delta_days"] == 2
+            assert args["cloud_cover_max"] == 15

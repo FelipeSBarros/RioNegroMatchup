@@ -3,7 +3,7 @@ api.py
 ======
 Single-import surface for the aquamatch pipeline wrappers.
 
-All three pipeline mode are importable from here so callers do not need
+All three pipeline steps are importable from here so callers do not need
 to know which module each function lives in::
 
     from aquamatch.api import (
@@ -45,8 +45,8 @@ Example — full pipeline in a script::
     if r1["status"] == "success":
         r2 = run_sentinel_pipeline(
             unique_csv=r1["outputs"]["unique_csv"],
-            time_delta=2,
-            cloud_cover=20,
+            time_delta_days=2,
+            cloud_cover_max=20,
         )
 
     if r2["status"] == "success":

@@ -52,8 +52,8 @@ class SentinelSection:
     enabled: bool = True
     catalog_json: str = "data/sentinel_downloads/sentinel_catalog.json"
     unique_csv: str = "data/monitoring_data/campaigns_unique_data.csv"
-    time_delta: int = 1
-    cloud_cover: int = 10
+    time_delta_days: int = 1
+    cloud_cover_max: int = 10
 
 
 @dataclass
@@ -408,8 +408,8 @@ sentinel:
   catalog_json: data/sentinel_downloads/sentinel_catalog.json
   unique_csv: data/monitoring_data/campaigns_unique_data.csv
 
-  time_delta: 1                # ±N days around each field date (int ≥ 0)
-  cloud_cover: 10               # Maximum cloud cover percentage (0–100)
+  time_delta_days: 1                # ±N days around each field date (int ≥ 0)
+  cloud_cover_max: 10               # Maximum cloud cover percentage (0–100)
 
 # =============================================================================
 # Step 3 — Sentinel-2 image download
@@ -799,20 +799,20 @@ tiles: {}
 
     def to_sentinel_args(self) -> dict:
         """
-        Return arguments for the Sentinel-2 catalog and download mode.
+        Return arguments for the Sentinel-2 catalog and download steps.
 
         Returns
         -------
         dict
             Keys for catalog building (``unique_csv``, ``catalog_json``,
-            ``time_delta``, ``cloud_cover``) and download
+            ``time_delta_days``, ``cloud_cover_max``) and download
             (``output_dir``, ``only_first``, ``download_scl``).
         """
         return {
             "unique_csv": Path(self.sentinel.unique_csv),
             "catalog_json": Path(self.sentinel.catalog_json),
-            "time_delta": self.sentinel.time_delta,
-            "cloud_cover": self.sentinel.cloud_cover,
+            "time_delta_days": self.sentinel.time_delta_days,
+            "cloud_cover_max": self.sentinel.cloud_cover_max,
             "output_dir": Path(self.download.output_dir),
             "only_first": self.download.only_first,
             "download_scl": self.download.download_scl,
@@ -974,8 +974,8 @@ tiles: {}
         build_catalog(
             csv_file=args["unique_csv"],
             output_json=args["catalog_json"],
-            time_delta=args["time_delta"],
-            cloud_cover=args["cloud_cover"],
+            time_delta=args["time_delta_days"],
+            cloud_cover=args["cloud_cover_max"],
         )
         return {"status": "ok", "catalog_json": str(args["catalog_json"])}
 
@@ -1073,7 +1073,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         default=False,
-        help="Log pipeline mode without executing them (only valid with --run).",
+        help="Log pipeline steps without executing them (only valid with --run).",
     )
     parser.add_argument(
         "--force",

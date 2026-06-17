@@ -158,8 +158,8 @@ class TestRunSentinelPipelineValidation:
     """Input validation before any I/O."""
 
     def test_invalid_steps_raises_value_error(self):
-        with pytest.raises(ValueError, match="Invalid mode"):
-            run_sentinel_pipeline(mode="invalid")
+        with pytest.raises(ValueError, match="Invalid steps"):
+            run_sentinel_pipeline(steps="invalid")
 
     def test_valid_steps_do_not_raise(self, tmp_path):
         """All three valid step values must be accepted (network calls mocked)."""
@@ -174,7 +174,7 @@ class TestRunSentinelPipelineValidation:
             result = run_sentinel_pipeline(
                 catalog_json=catalog_file,
                 output_dir=tmp_path,
-                mode=step,
+                steps=step,
             )
             # Should not raise; status depends on network mocking done elsewhere
             assert "step" in result
@@ -190,7 +190,7 @@ class TestRunSentinelPipelineDefaults:
 
             result = run_sentinel_pipeline(
                 unique_csv=None,
-                mode="catalog",
+                steps="catalog",
             )
 
         assert result["status"] == "error"
@@ -214,7 +214,7 @@ class TestRunSentinelPipelineDefaults:
             result = run_sentinel_pipeline(
                 catalog_json=catalog_file,
                 output_dir=None,
-                mode="download",
+                steps="download",
             )
 
         assert result["status"] == "success"
@@ -222,7 +222,7 @@ class TestRunSentinelPipelineDefaults:
 
 
 class TestRunSentinelPipelineDownloadStep:
-    """Tests for mode='download' — build_catalog is skipped."""
+    """Tests for steps='download' — build_catalog is skipped."""
 
     def test_returns_success_when_all_already_downloaded(self, tmp_path):
         catalog_file = tmp_path / "catalog.json"
@@ -235,7 +235,7 @@ class TestRunSentinelPipelineDownloadStep:
         result = run_sentinel_pipeline(
             catalog_json=catalog_file,
             output_dir=tmp_path,
-            mode="download",
+            steps="download",
         )
 
         assert result["status"] == "success"
@@ -252,7 +252,7 @@ class TestRunSentinelPipelineDownloadStep:
         result = run_sentinel_pipeline(
             catalog_json=catalog_file,
             output_dir=tmp_path,
-            mode="download",
+            steps="download",
         )
 
         assert result["outputs"]["output_dir"] == tmp_path
@@ -268,7 +268,7 @@ class TestRunSentinelPipelineDownloadStep:
         result = run_sentinel_pipeline(
             catalog_json=catalog_file,
             output_dir=tmp_path,
-            mode="download",
+            steps="download",
         )
 
         stats = result["outputs"]["download_stats"]
@@ -286,7 +286,7 @@ class TestRunSentinelPipelineDownloadStep:
         result = run_sentinel_pipeline(
             catalog_json=catalog_file,
             output_dir=tmp_path,
-            mode="download",
+            steps="download",
         )
 
         assert isinstance(result["elapsed_seconds"], (float, int))
@@ -296,7 +296,7 @@ class TestRunSentinelPipelineDownloadStep:
         result = run_sentinel_pipeline(
             catalog_json=tmp_path / "nonexistent.json",
             output_dir=tmp_path,
-            mode="download",
+            steps="download",
         )
 
         assert result["status"] == "error"
@@ -306,7 +306,7 @@ class TestRunSentinelPipelineDownloadStep:
         result = run_sentinel_pipeline(
             catalog_json=tmp_path / "nonexistent.json",
             output_dir=tmp_path,
-            mode="download",
+            steps="download",
         )
 
         assert isinstance(result["elapsed_seconds"], float)
@@ -323,13 +323,13 @@ class TestRunSentinelPipelineDownloadStep:
         result = run_sentinel_pipeline(
             catalog_json=str(catalog_file),
             output_dir=str(tmp_path),
-            mode="download",
+            steps="download",
         )
 
         assert result["status"] == "success"
 
     def test_download_step_does_not_write_catalog(self, tmp_path):
-        """mode='download' must not create or overwrite a catalog JSON."""
+        """steps='download' must not create or overwrite a catalog JSON."""
         catalog_file = tmp_path / "catalog.json"
         _write_catalog_json(catalog_file)
         original_mtime = catalog_file.stat().st_mtime
@@ -341,14 +341,14 @@ class TestRunSentinelPipelineDownloadStep:
         run_sentinel_pipeline(
             catalog_json=catalog_file,
             output_dir=tmp_path,
-            mode="download",
+            steps="download",
         )
 
         assert catalog_file.stat().st_mtime == original_mtime
 
 
 class TestRunSentinelPipelineCatalogStep:
-    """Tests for mode='catalog' — build_catalog is called, download is skipped.
+    """Tests for steps='catalog' — build_catalog is called, download is skipped.
 
     build_catalog() makes live SentinelHub + EarthSearch network calls, so
     catalog.search() and Client.search() are patched here.
@@ -400,7 +400,7 @@ class TestRunSentinelPipelineCatalogStep:
             run_sentinel_pipeline(
                 unique_csv=unique_csv,
                 catalog_json=catalog_file,
-                mode="catalog",
+                steps="catalog",
             )
 
         assert catalog_file.exists()
@@ -429,7 +429,7 @@ class TestRunSentinelPipelineCatalogStep:
             run_sentinel_pipeline(
                 unique_csv=unique_csv,
                 catalog_json=catalog_file,
-                mode="catalog",
+                steps="catalog",
             )
 
         with open(catalog_file) as f:
@@ -460,7 +460,7 @@ class TestRunSentinelPipelineCatalogStep:
             result = run_sentinel_pipeline(
                 unique_csv=unique_csv,
                 catalog_json=catalog_file,
-                mode="catalog",
+                steps="catalog",
             )
 
         assert result["outputs"]["catalog_json"] == catalog_file
@@ -489,7 +489,7 @@ class TestRunSentinelPipelineCatalogStep:
             run_sentinel_pipeline(
                 unique_csv=unique_csv,
                 catalog_json=catalog_file,
-                mode="catalog",
+                steps="catalog",
             )
 
         mock_run_download.assert_not_called()
@@ -498,7 +498,7 @@ class TestRunSentinelPipelineCatalogStep:
         result = run_sentinel_pipeline(
             unique_csv=tmp_path / "nonexistent.csv",
             catalog_json=tmp_path / "catalog.json",
-            mode="catalog",
+            steps="catalog",
         )
 
         assert result["status"] == "error"
@@ -506,7 +506,7 @@ class TestRunSentinelPipelineCatalogStep:
 
 
 class TestRunSentinelPipelineStatusDict:
-    """Status dict contract is consistent across all mode and outcomes."""
+    """Status dict contract is consistent across all steps and outcomes."""
 
     def test_step_field_is_sentinel(self, tmp_path):
         catalog_file = tmp_path / "catalog.json"
@@ -519,20 +519,20 @@ class TestRunSentinelPipelineStatusDict:
         result = run_sentinel_pipeline(
             catalog_json=catalog_file,
             output_dir=tmp_path,
-            mode="download",
+            steps="download",
         )
 
         assert result["step"] == "sentinel"
 
     def test_error_result_has_empty_outputs_before_failing_step(self, tmp_path):
-        """Outputs for completed mode are preserved even on error."""
+        """Outputs for completed steps are preserved even on error."""
         result = run_sentinel_pipeline(
             catalog_json=tmp_path / "nonexistent.json",
             output_dir=tmp_path,
-            mode="download",
+            steps="download",
         )
 
-        # No mode completed, so outputs should be empty or only partial
+        # No steps completed, so outputs should be empty or only partial
         assert isinstance(result["outputs"], dict)
 
     def test_partial_outputs_preserved_on_error_after_catalog(self, tmp_path):
@@ -564,7 +564,7 @@ class TestRunSentinelPipelineStatusDict:
                 unique_csv=unique_csv,
                 catalog_json=catalog_file,
                 output_dir=tmp_path,
-                mode="all",
+                steps="all",
             )
 
         assert result["status"] == "error"

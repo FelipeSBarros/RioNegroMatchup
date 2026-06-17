@@ -951,8 +951,8 @@ class AcoliteConfig:
         acolite_executable,
         base_output,
         inputfile,
-        time_delta=1,
-        cloud_cover=10,
+        time_delta_days=1,
+        cloud_cover_max=10,
         tile_config=None,
         **kwargs,
     ):
@@ -983,9 +983,9 @@ class AcoliteConfig:
             automatically.
         inputfile:
             Path to the input SAFE folder for this scene.
-        time_delta:
+        time_delta_days:
             Unused here; kept for API compatibility.
-        cloud_cover:
+        cloud_cover_max:
             Unused here; kept for API compatibility.
         tile_config:
             Optional ``TilesSection`` instance.  When provided, the
@@ -1457,7 +1457,7 @@ def _build_acolite_parser() -> "argparse.ArgumentParser":
         metavar="YAML",
         help=(
             "Path to a pipeline YAML config file.  Only the ACOLITE step is "
-            "executed; all other mode (insitu, sentinel, download) are skipped."
+            "executed; all other steps (insitu, sentinel, download) are skipped."
         ),
     )
 
@@ -1567,7 +1567,7 @@ if __name__ == "__main__":
 
         # Honour --dry-run and --no-skip-existing even in YAML mode
         if _args.dry_run:
-            logger.info("[dry_run] YAML mode — logging mode without executing.")
+            logger.info("[dry_run] YAML mode — logging steps without executing.")
         if _args.no_skip_existing:
             _cfg.acolite.skip_existing = False
 
