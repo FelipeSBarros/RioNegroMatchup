@@ -167,65 +167,58 @@ run_acolite_pipeline(
     limit = [-33.25, -58.45, -33.17, -58.33])
 ```
 
+A GeoJson's path can also be passed:
+
+```python
+run_acolite_pipeline(
+    acolite_executable="/path/to/acolite",
+    polygon = "/path/polygon.json")
+```
+
 For SCL-based water masking, use `with_scl_polygon()` to restrict processing to water pixels only:
 
 ```python
 run_acolite_pipeline(
     acolite_executable="/path/to/acolite",
-    use_scl=True)
+    use_scl=True,
+    scl_dir="data/sentinel_downloads/scl",
+    scl_kwargs={"min_area_m2": 5000},
+)
 ```
 
 For batch processing across multiple scenes with per-tile spatial restrictions:
 
 ```python
-from pathlib import Path
-from aquamatch.acolite_spec import AcoliteConfig, IOConfig
+from aquamatch import run_acolite_pipeline
 from aquamatch.pipeline_config import TilesSection
 
-cfg = AcoliteConfig(
-    acolite_executable="/path/to/acolite",
-    io=IOConfig(inputfile="", output=""),
-)
-
+# Per-tile restrictions (different polygon or limit per MGRS tile)
 tiles = TilesSection.from_dict({
     "21HUD": {"polygon": "data/polygons/21HUD.geojson"},
     "21HVD": {"limit": [-34.2, -56.8, -33.0, -55.1]},
 })
 
-results = cfg.run_batch(
-    safe_list=sorted(Path("data/sentinel_downloads").glob("*.SAFE")),
-    base_output="data/acolite_output",
-    use_scl=True,
-    scl_dir=Path("data/sentinel_downloads/scl"),
-    scl_kwargs={"min_area_m2": 5000},
-    tile_config=tiles,
-    continue_on_error=True,
-    skip_existing=True,
-)
-```
-
-You can also build per-scene configs directly from campaign rows, which resolves the spatial restriction automatically from row["s2_tile"]:
-
-```python
-from aquamatch.acolite_spec import AcoliteConfig
-from aquamatch.pipeline_config import TilesSection
-
-tiles = TilesSection.from_dict({
-    "21HUD": {"polygon": "data/polygons/21HUD.geojson"},
-    "21HVD": {"limit": [-34.2, -56.8, -33.0, -55.1]},
-})
-
-# row is a pandas Series from campaigns_unique_data.csv
-cfg = AcoliteConfig.from_campaigns_row(
-    row=row,
+result = run_acolite_pipeline(
     acolite_executable="/path/to/acolite",
-    base_output="data/acolite_output",
-    inputfile=str(safe_path),
+    safe_dir="data/sentinel_downloads",
+    output="data/acolite_output",
     tile_config=tiles,
 )
 ```
 
 > If `tile_config` is omitted, a 0.1° bounding box is derived automatically from `row["latitud"]`/`row["longitud"]`.
+
+**CLI equivalent:**
+
+```bash
+python -m aquamatch.acolite_spec \
+    --executable /path/to/acolite \
+    --safe-dir data/sentinel_downloads/S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD.SAFE \
+    --output data/acolite_output
+```
+
+> To run acolite with `limit` or `polygon` parameters, used YAML config. [see "Run the full pipeline from a YAML config"](#Run-the-full-pipeline-from-a-YAML-config)
+
 ---
 
 ## Run the full pipeline from a YAML config
