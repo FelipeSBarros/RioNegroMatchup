@@ -1,6 +1,9 @@
 # Aquamatch
 
-Python package and scripts to match Sentinel-2 satellite imagery with in situ water quality field measurements, apply atmospheric correction, and validate remote sensing water quality products.
+Bridging the gap between satellite observations and field data for water quality monitoring.
+
+Aquamatch is a Python package for discovering and downloading Sentinel-2 imagery based on field sampling events, applies atmospheric correction and extracts water quality parameters via ACOLITE, and exports to multiple formats, including data cube and Cloud Optimized GeoTIFF.
+Designed for reproducible, automated environmental monitoring workflows — from a single Python call, CLI command, or YAML config.
 
 ## Overview
 
@@ -59,19 +62,23 @@ This step involves reading field campaign data, cleaning measurement values and,
 - `campaigns_organized.csv` — full cleaned dataset for analysis
 - `campaigns_unique_data.csv` — one row per unique (date, tile) pair, used to drive the satellite search
 
-```bash
-python aquamatch/insitu_data.py --mode campaigns
+```python
+from aquamatch import run_insitu_pipeline
+
+run_insitu_pipeline(
+    stations="data/original_data/my_stations.xlsx",
+    campaigns="data/original_data/my_export.xlsx",
+)
 ```
 
-To use files with non-default names or in non-default locations:
+> Pass skip_clean=True if the OAN export was already cleaned before download. [See OAN's documention](https://www.ambiente.gub.uy/iSIA_OAN/guia.html)
 
+**CLI equivalent:**
 ```bash
 python aquamatch/insitu_data.py --mode campaigns \
   --stations your_path/my_stations.xlsx \
   --campaigns your_path/my_export.xlsx
 ```
-
-> The `--skip-clean` flag is available if the OAN export has already been cleaned before download. [See OAN's documention](https://www.ambiente.gub.uy/iSIA_OAN/guia.html)
 
 ---
 
@@ -79,11 +86,15 @@ python aquamatch/insitu_data.py --mode campaigns \
 
 Searches for Sentinel-2 L1C scenes that match each field date and location from `campaigns_unique_data.csv`. Only scenes whose MGRS tile matches the station's assigned tile are kept. For each L1C scene, the corresponding L2A scene is looked up to retrieve the SCL (Scene Classification) asset URL.
 
-```bash
-python aquamatch/sentinel_data.py --mode catalog \
-  --csv data/monitoring_data/campaigns_unique_data.csv \
-  --time-delta 2 \
-  --cloud-cover 20
+```python
+from aquamatch import run_sentinel_pipeline
+
+run_sentinel_pipeline(
+    csv="data/monitoring_data/campaigns_unique_data.csv",
+    time_delta=2,
+    cloud_cover=20,
+    steps="catalog"
+)
 ```
 
 The result is a `sentinel_catalog.json` file listing matched scenes per field date.
@@ -109,19 +120,36 @@ The result is a `sentinel_catalog.json` file listing matched scenes per field da
 ]
 ```
 
+**CLI equivalent:**
+
+```bash
+python aquamatch/sentinel_data.py --mode catalog \
+  --csv data/monitoring_data/campaigns_unique_data.csv \
+  --time-delta 2 \
+  --cloud-cover 20
+```
+
 ---
 
 ### Step 3 — Download imagery
 
 Download the SAFE products and SCL assets (the latter if desired, using `--download-scl` flag) listed in the catalogue. Any scenes that have already been downloaded are skipped automatically.
-The SCL asset can be used in Step 4 as a source of spatial waterbody information.
+
+```python
+from aquamatch import run_sentinel_pipeline
+
+run_sentinel_pipeline(download_scl=True, steps="download")
+```
+
+> The SCL asset can be used in Step 4 as a source of spatial waterbody information. 
+> Steps 2 and 3 can also be run together by passing `steps="all"`, or `mode="all"` to the CLI.
+
+**CLI equivalent:**
 
 ```bash
 python aquamatch/sentinel_data.py --mode download \
   --download-scl
 ```
-
-> You can run both steps (build catalog and download images) using `--mode all`
 
 ---
 
@@ -130,39 +158,80 @@ python aquamatch/sentinel_data.py --mode download \
 Runs [ACOLITE](https://github.com/acolite/acolite) on the downloaded SAFE folders to produce surface reflectance and water quality products (turbidity, SPM, chlorophyll-a, and others) as NetCDF files.
 
 ```python
-from aquamatch.acolite_spec import AcoliteConfig, IOConfig
+from aquamatch import run_acolite_pipeline
 
-cfg = AcoliteConfig(
+run_acolite_pipeline(
     acolite_executable="/path/to/acolite",
-    io=IOConfig(
-        inputfile="data/sentinel_downloads/S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD.SAFE",
-        output="data/acolite_output",
-        limit=(-33.25, -58.45, -33.17, -58.33),  # S, W, N, E
-    ),
-)
+    safe_dir="data/sentinel_downloads/S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD.SAFE",
+    output="data/acolite_output",
+    limit = [-33.25, -58.45, -33.17, -58.33])
+```
 
-result = cfg.run()
+A GeoJson's path can also be passed:
+
+```python
+run_acolite_pipeline(
+    acolite_executable="/path/to/acolite",
+    polygon = "/path/polygon.json")
 ```
 
 For SCL-based water masking, use `with_scl_polygon()` to restrict processing to water pixels only:
 
 ```python
-result = cfg.with_scl_polygon(
-    "data/sentinel_downloads/scl/S2B_MSIL1C_20200513T135109_N0500_R024_T21HVD_20230430T050652_SCL.tif"
-).run()
+run_acolite_pipeline(
+    acolite_executable="/path/to/acolite",
+    use_scl=True,
+    scl_dir="data/sentinel_downloads/scl",
+    scl_kwargs={"min_area_m2": 5000},
+)
 ```
+
+For batch processing across multiple scenes with per-tile spatial restrictions:
+
+```python
+from aquamatch import run_acolite_pipeline
+from aquamatch.pipeline_config import TilesSection
+
+# Per-tile restrictions (different polygon or limit per MGRS tile)
+tiles = TilesSection.from_dict({
+    "21HUD": {"polygon": "data/polygons/21HUD.geojson"},
+    "21HVD": {"limit": [-34.2, -56.8, -33.0, -55.1]},
+})
+
+result = run_acolite_pipeline(
+    acolite_executable="/path/to/acolite",
+    safe_dir="data/sentinel_downloads",
+    output="data/acolite_output",
+    tile_config=tiles,
+)
+```
+
+> If `tile_config` is omitted, a 0.1° bounding box is derived automatically from `row["latitud"]`/`row["longitud"]`.
+
+**CLI equivalent:**
+
+```bash
+python -m aquamatch.acolite_spec \
+    --executable /path/to/acolite \
+    --safe-dir data/sentinel_downloads/S2A_MSIL1C_20170713T135111_N0500_R024_T21HUD.SAFE \
+    --output data/acolite_output
+```
+
+> To run acolite with `limit` or `polygon` parameters, used YAML config. [see "Run the full pipeline from a YAML config"](#Run-the-full-pipeline-from-a-YAML-config)
 
 ---
 
 ## Run the full pipeline from a YAML config
 
-The pipeline can also be driven entirely from a single YAML file — one file per campaign, version-controlled alongside your data.
+For automated or version-controlled campaigns, the entire workflow can be driven from a single YAML file rather than calling each step individually. This is the recommended approach for production runs and shared projects.
 
-**Generate a template:**
+### Generate a template with all parameters at their defaults:
 
 ```bash
 python -m aquamatch.pipeline_config --generate campaign_2025.yaml
 ```
+
+### Running from YAML
 
 The generated file includes every parameter at its default value, with inline comments documenting units and valid options. Edit it for your campaign, then run:
 
@@ -195,13 +264,17 @@ tiles:
     limit: [-34.2, -56.8, -33.0, -55.1]
 ```
 
-**Dry-run** (validate config and log steps without executing):
+### Dry-run 
+
+Validate config and log steps without executing:
 
 ```bash
 python -m aquamatch.pipeline_config --run campaign_2025.yaml --dry-run
 ```
 
-**Force reprocess** (ignore existing outputs and reprocess all scenes):
+### Force process
+
+Force reprocess — ignore existing outputs and reprocess all scenes:
 
 ```bash
 python -m aquamatch.pipeline_config --run campaign_2025.yaml --force
@@ -209,9 +282,12 @@ python -m aquamatch.pipeline_config --run campaign_2025.yaml --force
 
 ### Per-tile spatial restrictions
 
-The `tiles:` section of the config lets you define a spatial restriction for each Sentinel-2 MGRS tile, so the same boundary is applied consistently across every scene processed for that tile — no need to specify it on each run.
+The `tiles`: section assigns a spatial restriction to each Sentinel-2 MGRS tile. The same boundary is then applied consistently across every scene processed for that tile. Restrictions are resolved in this precedence order:
 
-For each tile, set either `polygon` (a GeoJSON or WKT file path) or `limit` (a `[south, west, north, east]` bounding box in decimal degrees), or omit the tile entirely to process the full scene.
+1. **Static polygon** from `tiles:` — highest priority. If a tile has a polygon configured, it is applied directly to ACOLITE and SCL-based clipping (`use_scl`) is suppressed for that tile, since the static polygon already defines the water boundary precisely.
+2. **SCL-derived polygon** (`use_scl: true`) — used when the tile has no static polygon. A water mask is extracted from the SCL asset and applied as the processing boundary.
+3. **Static limit** from `tiles:` — applied when no polygon is available from either source above.
+4. **No restriction** — full scene is processed when the tile is not listed in `tiles:` and SCL clipping is disabled or unavailable.
 
 ```yaml
 tiles:
@@ -223,86 +299,6 @@ tiles:
     # no entry — full scene processed
 ```
 
-The restriction is resolved per scene during atmospheric correction following this precedence order:
-
-1. **Static polygon** from `tiles:` — highest priority. If a tile has a polygon configured, it is applied directly to ACOLITE and SCL-based clipping (`use_scl`) is suppressed for that tile, since the static polygon already defines the water boundary precisely.
-2. **SCL-derived polygon** (`use_scl: true`) — used when the tile has no static polygon. A water mask is extracted from the SCL asset and applied as the processing boundary.
-3. **Static limit** from `tiles:` — applied when no polygon is available from either source above.
-4. **No restriction** — full scene is processed when the tile is not listed in `tiles:` and SCL clipping is disabled or unavailable.
-
 > The tile ID is extracted automatically from the SAFE folder filename (e.g. `T21HUD` in `S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD_...SAFE`), so no manual mapping between files and tiles is needed.
 
----
-
-## Programmatic usage
-
-For scripting and integration into custom workflows, all pipeline steps can be called directly without a config file.
-
-```bash
-# Step 1 — prepare in situ data
-python aquamatch/insitu_data.py --mode campaigns
-
-# Step 2 — build catalog (±2 days, max 20% cloud cover)
-python aquamatch/sentinel_data.py --mode catalog \
-  --csv data/monitoring_data/campaigns_unique_data.csv \
-  --time-delta 2 \
-  --cloud-cover 20
-
-# Step 3 — download imagery and SCL assets
-python rionegromatchup/sentinel_data.py --mode download \
-  --download-scl
-```
-
-```python
-from pathlib import Path
-from aquamatch.acolite_spec import AcoliteConfig, IOConfig
-from aquamatch.pipeline_config import TilesSection, TileEntry
-
-cfg = AcoliteConfig(
-    acolite_executable="/path/to/acolite",
-    io=IOConfig(inputfile="", output=""),
-)
-
-safe_list = sorted(Path("data/sentinel_downloads").glob("*.SAFE"))
-scl_dir = Path("data/sentinel_downloads/scl")
-
-# Define per-tile spatial restrictions
-tiles = TilesSection.from_dict({
-    "21HUD": {"polygon": "data/polygons/21HUD.geojson"},
-    "21HVD": {"limit": [-34.2, -56.8, -33.0, -55.1]},
-})
-
-results = cfg.run_batch(
-    safe_list=safe_list,
-    base_output="data/acolite_output",
-    use_scl=True,
-    scl_dir=scl_dir,
-    scl_kwargs={"min_area_m2": 5000},
-    tile_config=tiles,
-    continue_on_error=True,
-    skip_existing=True,    # set False to reprocess all scenes
-)
-```
-
-You can also resolve tile restrictions per row when building configs from campaign data:
-
-```python
-from aquamatch.acolite_spec import AcoliteConfig
-from aquamatch.pipeline_config import TilesSection
-
-tiles = TilesSection.from_dict({
-    "21HUD": {"polygon": "data/polygons/21HUD.geojson"},
-    "21HVD": {"limit": [-34.2, -56.8, -33.0, -55.1]},
-})
-
-# row is a pandas Series from campaigns_unique_data.csv
-cfg = AcoliteConfig.from_campaigns_row(
-    row=row,
-    acolite_executable="/path/to/acolite",
-    base_output="data/acolite_output",
-    inputfile=str(safe_path),
-    tile_config=tiles,
-)
-```
-
-The spatial restriction is resolved automatically from `row["s2_tile"]`. If `tile_config` is omitted, the original behaviour applies: a 0.1° bounding box is derived from the row's `latitud`/`longitud` coordinates.
+> The same precedence logic applies when using run_batch() programmatically — see Step 4 above.

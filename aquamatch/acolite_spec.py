@@ -826,9 +826,18 @@ class AcoliteConfig:
                 self.io,
                 inputfile=str(safe_path),
                 output=str(image_output),
-                limit=tile_limit,
-                polygon=tile_polygon,
-                polygon_clip=tile_polygon is not None,
+                limit=tile_limit if tile_limit is not None else original_io.limit,
+                polygon=(
+                    tile_polygon if tile_polygon is not None else original_io.polygon
+                ),
+                polygon_clip=(
+                    tile_polygon is not None
+                    or (
+                        tile_limit is None
+                        and original_io.polygon is not None
+                        and original_io.polygon_clip
+                    )
+                ),
             )
 
             scl_used = False
@@ -1056,6 +1065,333 @@ class AcoliteConfig:
         return f"AcoliteConfig(\n{lines}\n)"
 
 
+# ---------------------------------------------------------------------------
+# Public pipeline wrapper
+# ---------------------------------------------------------------------------
+
+
+def run_acolite_pipeline(
+    acolite_executable: "str | None" = None,
+    safe_dir: "Path | str | None" = None,
+    output: "Path | str | None" = None,
+    scl_dir: "Path | str | None" = None,
+    use_scl: "bool | None" = None,
+    skip_existing: "bool | None" = None,
+    continue_on_error: "bool | None" = None,
+    tile_config: "Optional[object]" = None,
+    scl_kwargs: "dict | None" = None,
+    acolite_config: "Optional[AcoliteConfig]" = None,
+    dry_run: bool = False,
+    limit: "Optional[tuple[float, float, float, float]]" = None,
+    polygon: "Optional[str]" = None,
+) -> dict:
+    """
+    Run ACOLITE atmospheric correction on all ``.SAFE`` folders in a directory
+    and return a status dict.
+
+    This is the importable equivalent of running ACOLITE via the pipeline YAML
+    (``acolite.enabled: true``).  Internally it calls
+    :meth:`AcoliteConfig.run_batch` after resolving all parameters.
+
+    Two usage modes
+    ---------------
+    **Simple** — pass individual path and flag arguments; an
+    :class:`AcoliteConfig` is built automatically from project defaults::
+
+        from aquamatch.acolite_spec import run_acolite_pipeline
+
+        result = run_acolite_pipeline(
+            acolite_executable="/path/to/acolite/acolite.py",
+            safe_dir="data/sentinel_downloads",
+            output="data/acolite_output",
+            use_scl=True,
+            scl_dir="data/sentinel_downloads/scl",
+        )
+
+    **Advanced** — build and customise an :class:`AcoliteConfig` yourself and
+    pass it directly via ``acolite_config``.  In this mode all arguments
+    except ``safe_dir``, ``output``, ``scl_dir``, ``use_scl``,
+    ``skip_existing``, ``continue_on_error``, ``tile_config``, and
+    ``scl_kwargs`` are ignored::
+
+        from aquamatch.acolite_spec import AcoliteConfig, IOConfig, run_acolite_pipeline
+
+        cfg = AcoliteConfig.low_memory(acolite_executable="/path/to/acolite/acolite.py")
+        result = run_acolite_pipeline(
+            acolite_config=cfg,
+            safe_dir="data/sentinel_downloads",
+            output="data/acolite_output",
+        )
+
+    Parameters
+    ----------
+    acolite_executable:
+        Path to the ACOLITE executable (``acolite.py`` or compiled binary).
+        Ignored when ``acolite_config`` is provided.
+        Defaults to ``AcoliteSection.acolite_executable``
+        (``"/path/to/acolite/acolite.py"``).
+    safe_dir:
+        Directory to search recursively for ``.SAFE`` folders.
+        Defaults to ``AcoliteIOSection.safe_dir``
+        (``"data/sentinel_downloads"``).
+    output:
+        Root output directory for ACOLITE products.  Per-scene
+        subdirectories are created automatically.
+        Defaults to ``AcoliteIOSection.output``
+        (``"data/acolite_output"``).
+    scl_dir:
+        Directory containing SCL GeoTIFF files.  Required when
+        ``use_scl=True``.
+        Defaults to ``AcoliteIOSection.scl_dir``
+        (``"data/sentinel_downloads/scl"``).
+    use_scl:
+        If ``True``, resolve the SCL file for each scene, extract a water
+        polygon, and apply polygon clipping in ACOLITE.
+        Defaults to ``SclSection.use_scl`` (``True``).
+    skip_existing:
+        If ``True``, skip scenes whose output directory already contains
+        all expected output files.
+        Defaults to ``AcoliteSection.skip_existing`` (``True``).
+    continue_on_error:
+        If ``True``, log errors and continue processing remaining scenes
+        rather than raising on the first failure.
+        Defaults to ``AcoliteSection.continue_on_error`` (``True``).
+    tile_config:
+        Optional :class:`~aquamatch.pipeline_config.TilesSection` instance
+        mapping MGRS tile codes to spatial restrictions (polygon or limit).
+        Defaults to an empty ``TilesSection`` (no per-tile restriction).
+    scl_kwargs:
+        Extra keyword arguments forwarded to
+        :func:`~aquamatch.scl_water.scl_water_to_geojson` (e.g.
+        ``min_area_m2``, ``buffer_m``, ``simplify_tolerance``).
+        Defaults to ``{"min_area_m2": 5000, "simplify_tolerance": 20,
+        "buffer_m": 0}`` from ``SclSection``.
+    acolite_config:
+        A pre-built :class:`AcoliteConfig` instance.  When provided, all
+        ACOLITE configuration arguments (``acolite_executable`` and any
+        sub-configs) are taken from this object instead of being built
+        from defaults.  The ``run_batch`` arguments (``safe_dir``,
+        ``output``, ``scl_dir``, ``use_scl``, ``skip_existing``,
+        ``continue_on_error``, ``tile_config``, ``scl_kwargs``) still
+        apply.
+    dry_run:
+        If ``True``, log what would be executed for each scene without
+        calling the ACOLITE binary.  Settings files are still written so
+        the configuration can be inspected.  Defaults to ``False``.
+    limit:
+        Global bounding box ``(south, west, north, east)`` in decimal
+        degrees applied to **every** scene in ``safe_dir``.  Mutually
+        exclusive with ``polygon`` and ``tile_config``.
+    polygon:
+        Path to a GeoJSON or WKT file defining a region of interest
+        applied to **every** scene in ``safe_dir``.  Mutually exclusive
+        with ``limit`` and ``tile_config``.
+
+    Returns
+    -------
+    dict
+        ``{"step": "acolite", "status": "success", "outputs": {...},
+        "error": None, "elapsed_seconds": float}``
+
+        On failure the dict has ``"status": "error"`` and the exception
+        message in ``"error"``.  ``outputs`` keys:
+
+        * ``safe_dir``     — resolved path that was searched for ``.SAFE`` folders.
+        * ``output``       — resolved root output directory.
+        * ``n_scenes``     — total number of ``.SAFE`` folders found.
+        * ``n_success``    — scenes with ``returncode == 0``.
+        * ``n_skipped``    — scenes skipped (not found or already processed).
+        * ``n_error``      — scenes with a non-zero / error return code.
+        * ``scenes``       — the raw ``list[dict]`` from
+          :meth:`AcoliteConfig.run_batch`, one entry per scene.
+
+    Examples
+    --------
+    Minimal — let defaults handle everything::
+
+        result = run_acolite_pipeline(
+            acolite_executable="/path/to/acolite/acolite.py",
+        )
+        print(result["outputs"]["n_success"])
+
+    Apply a bounding box to all scenes::
+
+        result = run_acolite_pipeline(
+            acolite_executable="/path/to/acolite/acolite.py",
+            safe_dir="data/sentinel_downloads",
+            output="data/acolite_output",
+            limit=(-33.25, -58.45, -33.17, -58.33),
+        )
+
+    Apply a polygon to all scenes::
+
+        result = run_acolite_pipeline(
+            acolite_executable="/path/to/acolite/acolite.py",
+            safe_dir="data/sentinel_downloads",
+            output="data/acolite_output",
+            polygon="data/polygons/study_area.geojson",
+        )
+
+    Per-tile restrictions (different limits per MGRS tile)::
+
+        from aquamatch.pipeline_config import TilesSection
+        tiles = TilesSection.from_dict({
+            "21HUD": {"limit": [-34.2, -56.8, -33.0, -55.1]},
+            "21HVD": {"polygon": "data/polygons/21HVD.geojson"},
+        })
+        result = run_acolite_pipeline(
+            acolite_executable="/path/to/acolite/acolite.py",
+            safe_dir="data/sentinel_downloads",
+            output="data/acolite_output",
+            tile_config=tiles,
+        )
+
+    Force reprocess all scenes::
+
+        result = run_acolite_pipeline(
+            acolite_executable="/path/to/acolite/acolite.py",
+            safe_dir="data/sentinel_downloads",
+            output="data/acolite_output",
+            skip_existing=False,
+        )
+    """
+    import time
+    from aquamatch.pipeline_config import (
+        AcoliteSection,
+        AcoliteIOSection,
+        SclSection,
+        TilesSection,
+        TileEntry,
+    )
+
+    # --- Validate mutually exclusive spatial arguments ---
+    if limit is not None and polygon is not None:
+        raise ValueError("Specify either 'limit' or 'polygon', not both.")
+    if (limit is not None or polygon is not None) and tile_config is not None:
+        raise ValueError(
+            "Specify either 'limit'/'polygon' (global restriction) or "
+            "'tile_config' (per-tile restriction), not both."
+        )
+
+    # --- Resolve defaults from dataclass sections (single source of truth) ---
+    _a = AcoliteSection()
+    _io = AcoliteIOSection()
+    _scl = SclSection()
+
+    safe_dir_path = Path(safe_dir) if safe_dir is not None else Path(_io.safe_dir)
+    output_path = Path(output) if output is not None else Path(_io.output)
+    scl_dir_path = Path(scl_dir) if scl_dir is not None else Path(_io.scl_dir)
+    _use_scl = use_scl if use_scl is not None else _scl.use_scl
+    _skip_existing = skip_existing if skip_existing is not None else _a.skip_existing
+    _continue_on_error = (
+        continue_on_error if continue_on_error is not None else _a.continue_on_error
+    )
+    _tile_config = tile_config if tile_config is not None else TilesSection()
+
+    # --- Wrap limit / polygon into a global TilesSection ---
+    # When limit or polygon is set, every scene in safe_dir receives the same
+    # restriction.  run_batch applies tile_config per-tile — using the sentinel
+    # value "_GLOBAL_" ensures every SAFE folder matches regardless of its
+    # MGRS tile code, because we override run_batch's tile lookup below.
+    # Instead we build the AcoliteConfig io directly with the restriction and
+    # leave tile_config empty, which is simpler and avoids tile ID matching.
+    if limit is not None:
+        _global_limit = tuple(limit)
+        _global_polygon = None
+    elif polygon is not None:
+        _global_limit = None
+        _global_polygon = str(polygon)
+    else:
+        _global_limit = None
+        _global_polygon = None
+    _scl_kwargs = (
+        scl_kwargs
+        if scl_kwargs is not None
+        else {
+            "min_area_m2": _scl.min_area_m2,
+            "simplify_tolerance": _scl.simplify_tolerance,
+            "buffer_m": _scl.buffer_m,
+        }
+    )
+
+    t0 = time.monotonic()
+
+    try:
+        # --- Resolve or build AcoliteConfig ---
+        if acolite_config is not None:
+            cfg = acolite_config
+        else:
+            _executable = (
+                acolite_executable
+                if acolite_executable is not None
+                else _a.acolite_executable
+            )
+            cfg = AcoliteConfig(
+                acolite_executable=_executable,
+                io=IOConfig(inputfile="", output=str(output_path)),
+            )
+
+        # --- Apply global spatial restriction if provided ---
+        if _global_limit is not None or _global_polygon is not None:
+            cfg.io = replace(
+                cfg.io,
+                limit=_global_limit,
+                polygon=_global_polygon,
+                polygon_clip=_global_polygon is not None,
+            )
+
+        # --- Discover .SAFE folders ---
+        safe_list = sorted(safe_dir_path.rglob("*.SAFE"))
+        if not safe_list:
+            logger.warning(f"No .SAFE folders found in {safe_dir_path}")
+
+        # --- Run batch ---
+        results = cfg.run_batch(
+            safe_list=safe_list,
+            base_output=output_path,
+            dry_run=dry_run,
+            use_scl=_use_scl,
+            scl_dir=scl_dir_path if _use_scl else None,
+            scl_kwargs=_scl_kwargs,
+            continue_on_error=_continue_on_error,
+            tile_config=_tile_config,
+            skip_existing=_skip_existing,
+        )
+
+        # --- Summarise results ---
+        n_success = sum(1 for r in results if r.get("returncode") == 0)
+        n_skipped = sum(
+            1 for r in results if r.get("skipped") or r.get("skipped_existing")
+        )
+        n_error = sum(1 for r in results if r.get("returncode") not in (0, None))
+
+        return {
+            "step": "acolite",
+            "status": "success",
+            "outputs": {
+                "safe_dir": safe_dir_path,
+                "output": output_path,
+                "n_scenes": len(safe_list),
+                "n_success": n_success,
+                "n_skipped": n_skipped,
+                "n_error": n_error,
+                "scenes": results,
+            },
+            "error": None,
+            "elapsed_seconds": round(time.monotonic() - t0, 2),
+        }
+
+    except Exception as exc:
+        logger.error(f"run_acolite_pipeline failed: {exc}")
+        return {
+            "step": "acolite",
+            "status": "error",
+            "outputs": {},
+            "error": str(exc),
+            "elapsed_seconds": round(time.monotonic() - t0, 2),
+        }
+
+
 def _with_scl_polygon(
     self,
     scl_path,
@@ -1093,3 +1429,181 @@ def _with_scl_polygon(
 
 
 AcoliteConfig.with_scl_polygon = _with_scl_polygon
+
+
+# ---------------------------------------------------------------------------
+# CLI — hybrid: --config (YAML) or explicit flags
+# ---------------------------------------------------------------------------
+
+
+def _build_acolite_parser() -> "argparse.ArgumentParser":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m aquamatch.acolite_spec",
+        description=(
+            "Run ACOLITE atmospheric correction.\n\n"
+            "Two modes:\n"
+            "  --config  Load a full pipeline YAML and run only the ACOLITE step.\n"
+            "  (flags)   Build the configuration from explicit command-line arguments."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    # --- Mutually exclusive: YAML config vs explicit flags ---
+    mode_group = parser.add_mutually_exclusive_group(required=False)
+    mode_group.add_argument(
+        "--config",
+        metavar="YAML",
+        help=(
+            "Path to a pipeline YAML config file.  Only the ACOLITE step is "
+            "executed; all other steps (insitu, sentinel, download) are skipped."
+        ),
+    )
+
+    # --- Explicit flags (used when --config is not supplied) ---
+    parser.add_argument(
+        "--executable",
+        metavar="PATH",
+        default=None,
+        help="Path to the ACOLITE executable (acolite.py or compiled binary).",
+    )
+    parser.add_argument(
+        "--safe-dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Directory to search recursively for .SAFE folders. "
+            f"Default: {AcoliteIOSection_DEFAULT_SAFE_DIR}"
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Root output directory for ACOLITE products. "
+            f"Default: {AcoliteIOSection_DEFAULT_OUTPUT}"
+        ),
+    )
+    parser.add_argument(
+        "--scl-dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Directory containing SCL GeoTIFF files. Required with --use-scl. "
+            f"Default: {AcoliteIOSection_DEFAULT_SCL_DIR}"
+        ),
+    )
+    parser.add_argument(
+        "--use-scl",
+        action="store_true",
+        default=False,
+        help="Extract SCL water polygon per scene and apply polygon clipping.",
+    )
+    parser.add_argument(
+        "--no-skip-existing",
+        action="store_true",
+        default=False,
+        help="Reprocess all scenes even if output files already exist.",
+    )
+    parser.add_argument(
+        "--no-continue-on-error",
+        action="store_true",
+        default=False,
+        help="Stop processing on first scene failure instead of continuing.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help=(
+            "Log what would be executed without calling the ACOLITE binary. "
+            "Settings files are still written for inspection."
+        ),
+    )
+
+    return parser
+
+
+# Resolve display defaults once at module level to avoid instantiating
+# AcoliteIOSection inside the argument help strings (which runs at import time).
+def _get_io_defaults():
+    from aquamatch.pipeline_config import AcoliteIOSection
+
+    _io = AcoliteIOSection()
+    return _io.safe_dir, _io.output, _io.scl_dir
+
+
+try:
+    (
+        AcoliteIOSection_DEFAULT_SAFE_DIR,
+        AcoliteIOSection_DEFAULT_OUTPUT,
+        AcoliteIOSection_DEFAULT_SCL_DIR,
+    ) = _get_io_defaults()
+except Exception:
+    AcoliteIOSection_DEFAULT_SAFE_DIR = "data/sentinel_downloads"
+    AcoliteIOSection_DEFAULT_OUTPUT = "data/acolite_output"
+    AcoliteIOSection_DEFAULT_SCL_DIR = "data/sentinel_downloads/scl"
+
+
+if __name__ == "__main__":
+    import argparse
+    import logging as _logging
+
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    _parser = _build_acolite_parser()
+    _args = _parser.parse_args()
+
+    if _args.config:
+        # --- YAML mode: load config, run only the ACOLITE step ---
+        from aquamatch.pipeline_config import PipelineConfig
+
+        _cfg = PipelineConfig.from_yaml(_args.config)
+
+        # Honour --dry-run and --no-skip-existing even in YAML mode
+        if _args.dry_run:
+            logger.info("[dry_run] YAML mode — logging steps without executing.")
+        if _args.no_skip_existing:
+            _cfg.acolite.skip_existing = False
+
+        _results = _cfg._run_acolite()
+        _n_ok = sum(1 for r in _results if r.get("returncode") == 0)
+        _n_total = len(_results)
+        logger.info(f"ACOLITE complete — {_n_ok}/{_n_total} scenes succeeded.")
+
+    else:
+        # --- Explicit flags mode ---
+        if _args.executable is None:
+            _parser.error(
+                "--executable is required when --config is not supplied.\n"
+                "Provide the path to your ACOLITE executable, e.g.:\n"
+                "  --executable /path/to/acolite/acolite.py"
+            )
+
+        _result = run_acolite_pipeline(
+            acolite_executable=_args.executable,
+            safe_dir=_args.safe_dir,
+            output=_args.output,
+            scl_dir=_args.scl_dir,
+            use_scl=_args.use_scl,
+            skip_existing=not _args.no_skip_existing,
+            continue_on_error=not _args.no_continue_on_error,
+            dry_run=_args.dry_run,
+        )
+
+        if _result["status"] != "success":
+            logger.error(f"Pipeline failed: {_result['error']}")
+        else:
+            _out = _result["outputs"]
+            logger.info(
+                f"ACOLITE complete — "
+                f"{_out['n_success']}/{_out['n_scenes']} scenes succeeded, "
+                f"{_out['n_skipped']} skipped, "
+                f"{_out['n_error']} errors. "
+                f"({_result['elapsed_seconds']}s)"
+            )
