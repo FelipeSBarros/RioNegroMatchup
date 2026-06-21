@@ -14,7 +14,54 @@ from aquamatch.sentinel_data import (
     get_download_status,
     get_scl_path,
     SCL_SUBDIR,
+    _temporal_bucket,
+    _empty_buckets,
 )
+
+# ---------------------------------------------------------------------------
+# _temporal_bucket
+# ---------------------------------------------------------------------------
+
+
+class TestTemporalBucket:
+    """Tests for the _temporal_bucket helper."""
+
+    def test_same_day(self):
+        assert _temporal_bucket("2025-08-01", "2025-08-01") == "same_day"
+
+    def test_previous(self):
+        assert _temporal_bucket("2025-07-30", "2025-08-01") == "previous"
+
+    def test_posterior(self):
+        assert _temporal_bucket("2025-08-03", "2025-08-01") == "posterior"
+
+    def test_previous_two_days(self):
+        assert _temporal_bucket("2025-07-30", "2025-08-01") == "previous"
+
+    def test_posterior_one_day(self):
+        assert _temporal_bucket("2025-08-02", "2025-08-01") == "posterior"
+
+
+# ---------------------------------------------------------------------------
+# _empty_buckets
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyBuckets:
+
+    def test_returns_dict_with_three_keys(self):
+        b = _empty_buckets()
+        assert set(b.keys()) == {"same_day", "previous", "posterior"}
+
+    def test_all_buckets_are_empty_lists(self):
+        b = _empty_buckets()
+        for key in b:
+            assert b[key] == []
+
+
+# ---------------------------------------------------------------------------
+# create_bbox_from_point
+# ---------------------------------------------------------------------------
 
 
 class TestCreateBboxFromPoint:
@@ -43,6 +90,11 @@ class TestCreateBboxFromPoint:
         min_lon, min_lat, max_lon, max_lat = list(bbox)
         assert min_lon == pytest.approx(lon - buffer)
         assert max_lon == pytest.approx(lon + buffer)
+
+
+# ---------------------------------------------------------------------------
+# search_images
+# ---------------------------------------------------------------------------
 
 
 class TestSearchImages:
@@ -143,8 +195,13 @@ class TestSearchImages:
             assert result[0]["l2a_scl"] == []
 
 
+# ---------------------------------------------------------------------------
+# build_catalog
+# ---------------------------------------------------------------------------
+
+
 class TestBuildCatalog:
-    """Tests for build_catalog."""
+    """Tests for build_catalog — bucketed images_found schema."""
 
     def _make_csv(self, tmp_path) -> Path:
         csv_file = tmp_path / "campaigns.csv"
@@ -157,49 +214,234 @@ class TestBuildCatalog:
         ).to_csv(csv_file, index=False)
         return csv_file
 
+    def _fake_image(self, date="2025-08-01", cloud=5):
+        return {
+            "id": f"S2A_{date.replace('-','')}T101031",
+            "datetime": f"{date}T10:10:31.000Z",
+            "cloud_cover": cloud,
+            "href": "https://fake-link.com/product",
+            "delta_days": 0,
+            "l2a_scl": "https://fake-link.com/SCL.tif",
+        }
+
+    # --- Output file ---
+
     def test_creates_json_output(self, tmp_path):
         csv_file = self._make_csv(tmp_path)
         output_json = tmp_path / "catalog.json"
-        fake_image = {
-            "id": "S2A_20250801T101031",
-            "datetime": "2025-08-01T10:10:31.000Z",
-            "cloud_cover": 5,
-            "href": "https://fake-link.com/product",
-            "delta_days": 0,
-            "l2a_scl": "https://fake-link.com/SCL.tif",
-        }
         with patch(
-            "aquamatch.sentinel_data.search_images", return_value=[fake_image]
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image()],
         ):
-            build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
-
+            build_catalog(csv_file, output_json)
         assert output_json.exists()
 
-    def test_output_has_correct_structure(self, tmp_path):
+    # --- Top-level schema ---
+
+    def test_output_is_list(self, tmp_path):
         csv_file = self._make_csv(tmp_path)
         output_json = tmp_path / "catalog.json"
-        fake_image = {
-            "id": "S2A_20250801T101031",
-            "datetime": "2025-08-01T10:10:31.000Z",
-            "cloud_cover": 5,
-            "href": "https://fake-link.com/product",
-            "delta_days": 0,
-            "l2a_scl": "https://fake-link.com/SCL.tif",
-        }
         with patch(
-            "aquamatch.sentinel_data.search_images", return_value=[fake_image]
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image()],
         ):
-            build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
-
-        with open(output_json) as f:
-            data = json.load(f)
-
+            build_catalog(csv_file, output_json)
+        data = json.loads(output_json.read_text())
         assert isinstance(data, list)
-        assert len(data) == 2
+
+    def test_each_entry_has_field_date_and_images_found(self, tmp_path):
+        csv_file = self._make_csv(tmp_path)
+        output_json = tmp_path / "catalog.json"
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image()],
+        ):
+            build_catalog(csv_file, output_json)
+        data = json.loads(output_json.read_text())
         for entry in data:
             assert "field_date" in entry
             assert "images_found" in entry
-            assert isinstance(entry["images_found"], list)
+
+    # --- images_found is now a dict with three buckets ---
+
+    def test_images_found_is_dict(self, tmp_path):
+        csv_file = self._make_csv(tmp_path)
+        output_json = tmp_path / "catalog.json"
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image()],
+        ):
+            build_catalog(csv_file, output_json)
+        data = json.loads(output_json.read_text())
+        assert isinstance(data[0]["images_found"], dict)
+
+    def test_images_found_has_three_bucket_keys(self, tmp_path):
+        csv_file = self._make_csv(tmp_path)
+        output_json = tmp_path / "catalog.json"
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image()],
+        ):
+            build_catalog(csv_file, output_json)
+        data = json.loads(output_json.read_text())
+        assert set(data[0]["images_found"].keys()) == {
+            "same_day",
+            "previous",
+            "posterior",
+        }
+
+    # --- Correct bucketing ---
+
+    def test_same_day_image_goes_into_same_day_bucket(self, tmp_path):
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {"date": ["2025-08-01"], "longitud": [-56.5], "latitud": [-32.85]}
+        ).to_csv(csv_file, index=False)
+        output_json = tmp_path / "catalog.json"
+
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image(date="2025-08-01")],
+        ):
+            build_catalog(csv_file, output_json)
+
+        data = json.loads(output_json.read_text())
+        assert len(data[0]["images_found"]["same_day"]) == 1
+        assert len(data[0]["images_found"]["previous"]) == 0
+        assert len(data[0]["images_found"]["posterior"]) == 0
+
+    def test_earlier_image_goes_into_previous_bucket(self, tmp_path):
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {"date": ["2025-08-01"], "longitud": [-56.5], "latitud": [-32.85]}
+        ).to_csv(csv_file, index=False)
+        output_json = tmp_path / "catalog.json"
+
+        img = {**self._fake_image(date="2025-07-30"), "delta_days": 2}
+        with patch("aquamatch.sentinel_data.search_images", return_value=[img]):
+            build_catalog(csv_file, output_json)
+
+        data = json.loads(output_json.read_text())
+        assert len(data[0]["images_found"]["previous"]) == 1
+        assert len(data[0]["images_found"]["same_day"]) == 0
+        assert len(data[0]["images_found"]["posterior"]) == 0
+
+    def test_later_image_goes_into_posterior_bucket(self, tmp_path):
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {"date": ["2025-08-01"], "longitud": [-56.5], "latitud": [-32.85]}
+        ).to_csv(csv_file, index=False)
+        output_json = tmp_path / "catalog.json"
+
+        img = {**self._fake_image(date="2025-08-03"), "delta_days": 2}
+        with patch("aquamatch.sentinel_data.search_images", return_value=[img]):
+            build_catalog(csv_file, output_json)
+
+        data = json.loads(output_json.read_text())
+        assert len(data[0]["images_found"]["posterior"]) == 1
+        assert len(data[0]["images_found"]["same_day"]) == 0
+        assert len(data[0]["images_found"]["previous"]) == 0
+
+    def test_mixed_images_distributed_across_buckets(self, tmp_path):
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {"date": ["2025-08-01"], "longitud": [-56.5], "latitud": [-32.85]}
+        ).to_csv(csv_file, index=False)
+        output_json = tmp_path / "catalog.json"
+
+        images = [
+            {**self._fake_image(date="2025-08-01"), "id": "SAME", "delta_days": 0},
+            {**self._fake_image(date="2025-07-31"), "id": "PREV", "delta_days": 1},
+            {**self._fake_image(date="2025-08-02"), "id": "POST", "delta_days": 1},
+        ]
+        with patch("aquamatch.sentinel_data.search_images", return_value=images):
+            build_catalog(csv_file, output_json)
+
+        data = json.loads(output_json.read_text())
+        buckets = data[0]["images_found"]
+        assert len(buckets["same_day"]) == 1
+        assert len(buckets["previous"]) == 1
+        assert len(buckets["posterior"]) == 1
+
+    # --- Sorting within buckets ---
+
+    def test_bucket_sorted_by_delta_days_then_cloud_cover(self, tmp_path):
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {"date": ["2025-08-01"], "longitud": [-56.5], "latitud": [-32.85]}
+        ).to_csv(csv_file, index=False)
+        output_json = tmp_path / "catalog.json"
+
+        images = [
+            {
+                **self._fake_image(date="2025-07-30"),
+                "id": "P2_HIGH",
+                "delta_days": 2,
+                "cloud_cover": 20,
+            },
+            {
+                **self._fake_image(date="2025-07-31"),
+                "id": "P1_HIGH",
+                "delta_days": 1,
+                "cloud_cover": 15,
+            },
+            {
+                **self._fake_image(date="2025-07-31"),
+                "id": "P1_LOW",
+                "delta_days": 1,
+                "cloud_cover": 5,
+            },
+        ]
+        with patch("aquamatch.sentinel_data.search_images", return_value=images):
+            build_catalog(csv_file, output_json)
+
+        data = json.loads(output_json.read_text())
+        previous = data[0]["images_found"]["previous"]
+        assert len(previous) == 3
+        assert previous[0]["id"] == "P1_LOW"  # delta=1, cloud=5
+        assert previous[1]["id"] == "P1_HIGH"  # delta=1, cloud=15
+        assert previous[2]["id"] == "P2_HIGH"  # delta=2, cloud=20
+
+    # --- Empty results ---
+
+    def test_no_images_found_produces_empty_buckets(self, tmp_path):
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {"date": ["2025-08-01"], "longitud": [-56.5], "latitud": [-32.85]}
+        ).to_csv(csv_file, index=False)
+        output_json = tmp_path / "catalog.json"
+
+        with patch("aquamatch.sentinel_data.search_images", return_value=[]):
+            build_catalog(csv_file, output_json)
+
+        data = json.loads(output_json.read_text())
+        assert data == []
+
+    # --- Deduplication ---
+
+    def test_deduplicates_same_scene_across_stations(self, tmp_path):
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {
+                "date": ["2025-08-01", "2025-08-01"],
+                "longitud": [-56.5, -56.6],
+                "latitud": [-32.85, -32.90],
+            }
+        ).to_csv(csv_file, index=False, sep=";")
+        output_json = tmp_path / "catalog.json"
+
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image()],
+        ):
+            build_catalog(csv_file, output_json)
+
+        data = json.loads(output_json.read_text())
+        assert len(data) == 1
+        total = sum(len(v) for v in data[0]["images_found"].values())
+        assert total == 1
+
+    # --- Validation ---
 
     def test_raises_on_missing_date_column(self, tmp_path):
         csv_file = tmp_path / "bad.csv"
@@ -217,72 +459,235 @@ class TestBuildCatalog:
         with pytest.raises(ValueError, match="longitud"):
             build_catalog(csv_file, tmp_path / "out.json")
 
-    def test_deduplicates_same_scene_across_stations(self, tmp_path):
-        csv_file = tmp_path / "campaigns.csv"
-        pd.DataFrame(
-            {
-                "date": ["2025-08-01", "2025-08-01"],
-                "longitud": [-56.5, -56.6],
-                "latitud": [-32.85, -32.90],
-            }
-        ).to_csv(csv_file, index=False, sep=";")
-
-        output_json = tmp_path / "catalog.json"
-
-        fake_image = {
-            "id": "S2A_20250801T101031",
-            "datetime": "2025-08-01T10:10:31.000Z",
-            "cloud_cover": 5,
-            "href": "https://fake-link.com/product",
-            "delta_days": 0,
-            "l2a_scl": "https://fake-link.com/SCL.tif",
-        }
-
-        with patch(
-            "aquamatch.sentinel_data.search_images", return_value=[fake_image]
-        ):
-            build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
-
-        with open(output_json) as f:
-            data = json.load(f)
-
-        assert len(data) == 1
-        assert len(data[0]["images_found"]) == 1
-        assert data[0]["images_found"][0]["id"] == "S2A_20250801T101031"
-
     def test_reads_comma_separated_csv(self, tmp_path):
         csv_file = tmp_path / "campaigns_comma.csv"
         pd.DataFrame(
-            {
-                "date": ["2025-08-01"],
-                "longitud": [-56.5],
-                "latitud": [-32.85],
-            }
+            {"date": ["2025-08-01"], "longitud": [-56.5], "latitud": [-32.85]}
         ).to_csv(csv_file, index=False)
         output_json = tmp_path / "catalog.json"
-        fake_image = {
-            "id": "S2A_20250801T101031",
-            "datetime": "2025-08-01T10:10:31.000Z",
-            "cloud_cover": 5,
-            "href": "https://fake-link.com/product",
-            "delta_days": 0,
-            "l2a_scl": "https://fake-link.com/SCL.tif",
-        }
         with patch(
-            "aquamatch.sentinel_data.search_images", return_value=[fake_image]
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image()],
         ):
-            build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
+            build_catalog(csv_file, output_json)
         assert output_json.exists()
 
-    def test_entry_created_when_no_images_found(self, tmp_path):
-        csv_file = self._make_csv(tmp_path)
+    # --- Image keys preserved ---
+
+    def test_image_keys_preserved_in_bucket(self, tmp_path):
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {"date": ["2025-08-01"], "longitud": [-56.5], "latitud": [-32.85]}
+        ).to_csv(csv_file, index=False)
         output_json = tmp_path / "catalog.json"
-        with patch("aquamatch.sentinel_data.search_images", return_value=[]):
-            build_catalog(csv_file, output_json, time_delta=1, cloud_cover=10)
-        with open(output_json) as f:
-            data = json.load(f)
-        assert len(data) == 0
-        assert data == []
+
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image()],
+        ):
+            build_catalog(csv_file, output_json)
+
+        data = json.loads(output_json.read_text())
+        img = data[0]["images_found"]["same_day"][0]
+        for key in ("id", "datetime", "cloud_cover", "href", "delta_days", "l2a_scl"):
+            assert key in img
+
+    def test_internal_field_date_key_not_in_output(self, tmp_path):
+        """The internal _field_date helper key must not appear in the JSON output."""
+        csv_file = tmp_path / "campaigns.csv"
+        pd.DataFrame(
+            {"date": ["2025-08-01"], "longitud": [-56.5], "latitud": [-32.85]}
+        ).to_csv(csv_file, index=False)
+        output_json = tmp_path / "catalog.json"
+
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=[self._fake_image()],
+        ):
+            build_catalog(csv_file, output_json)
+
+        data = json.loads(output_json.read_text())
+        img = data[0]["images_found"]["same_day"][0]
+        assert "_field_date" not in img
+
+
+# ---------------------------------------------------------------------------
+# run_download — backward compatibility with bucketed schema
+# ---------------------------------------------------------------------------
+
+
+class TestRunDownloadBucketedSchema:
+    """run_download must handle the new bucketed images_found dict."""
+
+    def _make_bucketed_catalog(self, tmp_path, bucket="same_day") -> Path:
+        img = {
+            "id": "IMG1",
+            "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG1/path",
+            "l2a_scl": "https://fake.com/IMG1_SCL.tif",
+            "delta_days": 0,
+            "cloud_cover": 5,
+            "datetime": "2024-03-15T13:51:11Z",
+        }
+        catalog_data = [
+            {
+                "field_date": "2024-03-15",
+                "images_found": {
+                    "same_day": [img] if bucket == "same_day" else [],
+                    "previous": [img] if bucket == "previous" else [],
+                    "posterior": [img] if bucket == "posterior" else [],
+                },
+            }
+        ]
+        path = tmp_path / "catalog.json"
+        path.write_text(json.dumps(catalog_data))
+        return path
+
+    def test_processes_same_day_image(self, tmp_path):
+        catalog = self._make_bucketed_catalog(tmp_path, bucket="same_day")
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.download_scl_asset"
+        ), patch(
+            "aquamatch.sentinel_data.get_download_status",
+            return_value={
+                "safe_exists": False,
+                "scl_exists": False,
+                "all_downloaded": False,
+            },
+        ):
+            stats = run_download(catalog, tmp_path, only_first=True, download_scl=False)
+        assert stats["total_processed"] == 1
+
+    def test_processes_previous_image_when_no_same_day(self, tmp_path):
+        catalog = self._make_bucketed_catalog(tmp_path, bucket="previous")
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.download_scl_asset"
+        ), patch(
+            "aquamatch.sentinel_data.get_download_status",
+            return_value={
+                "safe_exists": False,
+                "scl_exists": False,
+                "all_downloaded": False,
+            },
+        ):
+            stats = run_download(catalog, tmp_path, only_first=True, download_scl=False)
+        assert stats["total_processed"] == 1
+
+    def test_empty_buckets_skips_date(self, tmp_path):
+        catalog_data = [
+            {
+                "field_date": "2024-03-15",
+                "images_found": {"same_day": [], "previous": [], "posterior": []},
+            }
+        ]
+        catalog = tmp_path / "catalog.json"
+        catalog.write_text(json.dumps(catalog_data))
+        with patch("aquamatch.sentinel_data.download_product") as mock_dl:
+            run_download(catalog, tmp_path, only_first=True, download_scl=False)
+        mock_dl.assert_not_called()
+
+    def test_only_first_downloads_one_image_across_all_buckets(self, tmp_path):
+        img = {
+            "id": "IMG1",
+            "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG1/path",
+            "l2a_scl": "https://fake.com/IMG1_SCL.tif",
+            "delta_days": 0,
+            "cloud_cover": 5,
+            "datetime": "2024-03-15T13:51:11Z",
+        }
+        catalog_data = [
+            {
+                "field_date": "2024-03-15",
+                "images_found": {
+                    "same_day": [img],
+                    "previous": [{**img, "id": "IMG2"}],
+                    "posterior": [{**img, "id": "IMG3"}],
+                },
+            }
+        ]
+        catalog = tmp_path / "catalog.json"
+        catalog.write_text(json.dumps(catalog_data))
+
+        with patch("aquamatch.sentinel_data.download_product") as mock_dl, patch(
+            "aquamatch.sentinel_data.download_scl_asset"
+        ), patch(
+            "aquamatch.sentinel_data.get_download_status",
+            return_value={
+                "safe_exists": False,
+                "scl_exists": False,
+                "all_downloaded": False,
+            },
+        ):
+            run_download(catalog, tmp_path, only_first=True, download_scl=False)
+        assert mock_dl.call_count == 1
+
+    def test_only_first_false_downloads_all_images(self, tmp_path):
+        img = {
+            "id": "IMG1",
+            "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG1/path",
+            "l2a_scl": None,
+            "delta_days": 0,
+            "cloud_cover": 5,
+            "datetime": "2024-03-15T13:51:11Z",
+        }
+        catalog_data = [
+            {
+                "field_date": "2024-03-15",
+                "images_found": {
+                    "same_day": [img],
+                    "previous": [{**img, "id": "IMG2"}],
+                    "posterior": [{**img, "id": "IMG3"}],
+                },
+            }
+        ]
+        catalog = tmp_path / "catalog.json"
+        catalog.write_text(json.dumps(catalog_data))
+
+        with patch("aquamatch.sentinel_data.download_product") as mock_dl, patch(
+            "aquamatch.sentinel_data.get_download_status",
+            return_value={
+                "safe_exists": False,
+                "scl_exists": False,
+                "all_downloaded": False,
+            },
+        ):
+            run_download(catalog, tmp_path, only_first=False, download_scl=False)
+        assert mock_dl.call_count == 3
+
+    def test_backward_compat_with_flat_list_catalog(self, tmp_path):
+        """Old-style flat list catalogs must still be processed without error."""
+        catalog_data = [
+            {
+                "field_date": "2024-03-15",
+                "images_found": [
+                    {
+                        "id": "IMG1",
+                        "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG1/path",
+                        "l2a_scl": None,
+                        "delta_days": 0,
+                        "cloud_cover": 5,
+                        "datetime": "2024-03-15T13:51:11Z",
+                    }
+                ],
+            }
+        ]
+        catalog = tmp_path / "catalog.json"
+        catalog.write_text(json.dumps(catalog_data))
+
+        with patch("aquamatch.sentinel_data.download_product") as mock_dl, patch(
+            "aquamatch.sentinel_data.get_download_status",
+            return_value={
+                "safe_exists": False,
+                "scl_exists": False,
+                "all_downloaded": False,
+            },
+        ):
+            stats = run_download(catalog, tmp_path, only_first=True, download_scl=False)
+        assert mock_dl.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# get_scl_path
+# ---------------------------------------------------------------------------
 
 
 class TestGetSclPath:
@@ -303,7 +708,6 @@ class TestGetSclPath:
         product_core_id = product_id.split(".")[0]
         expected = get_scl_path(product_id, tmp_path)
 
-        # Simulate what download_scl_asset would write
         scl_dir = tmp_path / SCL_SUBDIR
         scl_dir.mkdir()
         actual = scl_dir / f"{product_core_id}_SCL.tif"
@@ -311,6 +715,11 @@ class TestGetSclPath:
 
         assert expected == actual
         assert expected.exists()
+
+
+# ---------------------------------------------------------------------------
+# get_download_status
+# ---------------------------------------------------------------------------
 
 
 class TestGetDownloadStatus:
@@ -334,7 +743,6 @@ class TestGetDownloadStatus:
         assert status["all_downloaded"] is False
 
     def test_scl_check_when_required(self, tmp_path):
-        """SCL is now expected under {output_dir}/scl/."""
         product_id = "S2A_MSIL1C_20250801.SAFE"
         product_core_id = product_id.split(".")[0]
 
@@ -342,7 +750,6 @@ class TestGetDownloadStatus:
         safe_file.mkdir()
         (safe_file / "dummy.xml").write_text("x")
 
-        # Create SCL in the correct subdirectory
         scl_dir = tmp_path / SCL_SUBDIR
         scl_dir.mkdir()
         (scl_dir / f"{product_core_id}_SCL.tif").write_bytes(b"fake")
@@ -352,66 +759,81 @@ class TestGetDownloadStatus:
         assert status["all_downloaded"] is True
 
     def test_all_downloaded_false_when_scl_missing(self, tmp_path):
-        """SCL missing from scl/ subdir → all_downloaded must be False."""
         product_id = "S2A_MSIL1C_20250801"
         safe_folder = tmp_path / product_id
         safe_folder.mkdir()
         (safe_folder / "dummy.xml").write_text("x")
 
-        # No SCL file anywhere
         status = get_download_status(product_id, tmp_path, download_scl=True)
         assert status["safe_exists"] is True
         assert status["scl_exists"] is False
         assert status["all_downloaded"] is False
 
     def test_scl_not_found_in_old_flat_location(self, tmp_path):
-        """A SCL file placed in the old flat location must NOT satisfy the check."""
         product_id = "S2A_MSIL1C_20250801"
         safe_folder = tmp_path / product_id
         safe_folder.mkdir()
         (safe_folder / "dummy.xml").write_text("x")
 
-        # Place SCL in the old flat location (should no longer be recognised)
         (tmp_path / f"{product_id}_SCL.tif").write_bytes(b"old")
 
         status = get_download_status(product_id, tmp_path, download_scl=True)
         assert status["scl_exists"] is False
 
 
+# ---------------------------------------------------------------------------
+# run_download (original tests, adapted for bucketed schema)
+# ---------------------------------------------------------------------------
+
+
 class TestRunDownload:
     """Tests for run_download."""
 
     def _make_catalog(self, tmp_path) -> Path:
+        img1 = {
+            "id": "IMG1",
+            "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG1/path",
+            "l2a_scl": "https://fake.com/IMG1_SCL.tif",
+            "delta_days": 0,
+            "cloud_cover": 5,
+            "datetime": "2024-03-15T13:51:11Z",
+        }
+        img2 = {
+            "id": "IMG2",
+            "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG2/path",
+            "l2a_scl": "https://fake.com/IMG2_SCL.tif",
+            "delta_days": 0,
+            "cloud_cover": 3,
+            "datetime": "2024-03-16T13:51:11Z",
+        }
+        img3 = {
+            "id": "IMG3",
+            "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG3/path",
+            "l2a_scl": "https://fake.com/IMG3_SCL.tif",
+            "delta_days": 1,
+            "cloud_cover": 8,
+            "datetime": "2024-03-17T13:51:11Z",
+        }
         catalog_data = [
             {
-                "field_date": "2025-08-01",
-                "images_found": [
-                    {
-                        "id": "IMG1",
-                        "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG1/path",
-                        "l2a_scl": "https://fake.com/IMG1_SCL.tif",
-                    },
-                ],
+                "field_date": "2024-03-15",
+                "images_found": {
+                    "same_day": [img1],
+                    "previous": [],
+                    "posterior": [],
+                },
             },
             {
-                "field_date": "2025-08-02",
-                "images_found": [
-                    {
-                        "id": "IMG2",
-                        "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG2/path",
-                        "l2a_scl": "https://fake.com/IMG2_SCL.tif",
-                    },
-                    {
-                        "id": "IMG3",
-                        "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG3/path",
-                        "l2a_scl": "https://fake.com/IMG3_SCL.tif",
-                    },
-                ],
+                "field_date": "2024-03-16",
+                "images_found": {
+                    "same_day": [img2],
+                    "previous": [],
+                    "posterior": [img3],
+                },
             },
         ]
         catalog_json = tmp_path / "catalog.json"
-        with open(catalog_json, "w") as f:
-            json.dump(catalog_data, f)
+        catalog_json.write_text(json.dumps(catalog_data))
         return catalog_json
 
     def test_only_first_downloads_one_per_date(self, tmp_path):

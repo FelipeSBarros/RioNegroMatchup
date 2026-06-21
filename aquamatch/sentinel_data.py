@@ -71,6 +71,38 @@ def _tile_from_scene_id(scene_id: str) -> str | None:
     return None
 
 
+def _temporal_bucket(acquisition_date: str, field_date: str) -> str:
+    """
+    Classify an image acquisition relative to its field date.
+
+    Parameters
+    ----------
+    acquisition_date:
+        Scene acquisition date as ``YYYY-MM-DD``.
+    field_date:
+        Field sampling date as ``YYYY-MM-DD``.
+
+    Returns
+    -------
+    str
+        One of ``"same_day"``, ``"previous"``, or ``"posterior"``.
+    """
+    acq = datetime.fromisoformat(acquisition_date)
+    fld = datetime.fromisoformat(field_date)
+    diff = (acq - fld).days
+    if diff == 0:
+        return "same_day"
+    elif diff < 0:
+        return "previous"
+    else:
+        return "posterior"
+
+
+def _empty_buckets() -> dict:
+    """Return an empty images_found bucket dict."""
+    return {"same_day": [], "previous": [], "posterior": []}
+
+
 def create_bbox_from_point(lon: float, lat: float, buffer_degrees=0.01):
     """Cria um BBox com buffer em torno de um ponto (lon, lat)."""
     return BBox(
@@ -160,6 +192,35 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
 
 
 def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=10):
+    """
+    Search for Sentinel-2 scenes matching each field date in *csv_file* and
+    write a catalog JSON to *output_json*.
+
+    Catalog schema
+    --------------
+    Each entry in the output list corresponds to one unique field date / location
+    combination and has the form::
+
+        {
+            "field_date": "YYYY-MM-DD",
+            "images_found": {
+                "same_day":  [ <image>, ... ],   # delta_days == 0
+                "previous":  [ <image>, ... ],   # acquired before field date
+                "posterior": [ <image>, ... ]    # acquired after field date
+            }
+        }
+
+    Within each bucket images are sorted by ``(delta_days, cloud_cover)``
+    ascending, so the best candidate is always ``bucket[0]``.
+
+    An *image* dict contains:
+        - ``id``          — Sentinel-2 scene identifier
+        - ``datetime``    — acquisition ISO-8601 datetime string
+        - ``cloud_cover`` — cloud cover percentage
+        - ``href``        — S3/CDSE download URL for the SAFE product
+        - ``delta_days``  — absolute difference in days from the field date
+        - ``l2a_scl``     — matching SCL asset URL, or ``None``
+    """
     df = pd.read_csv(csv_file, sep=None, engine="python")
     if "date" not in df.columns:
         raise ValueError("date column not found in CSV")
@@ -181,18 +242,19 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
             ["date", "longitud", "latitud", "s2_tile"]
         ].drop_duplicates()
 
+    # date → {scene_id → img}  (deduplication layer, same as before)
     scenes_by_date: dict[str, dict] = defaultdict(dict)
 
     for idx, row in unique_dates_places.iterrows():
-        date = row["date"]
+        field_date = row["date"]
         expected_tile = row["s2_tile"] if filter_by_tile else None
         bbox_geometry = create_bbox_from_point(row["longitud"], row["latitud"])
 
         logger.info(
-            f"Processando data {date} | lon={row['longitud']} lat={row['latitud']}"
+            f"Processando data {field_date} | lon={row['longitud']} lat={row['latitud']}"
             + (f" | tile={expected_tile}" if filter_by_tile else "")
         )
-        images = search_images(bbox_geometry, date, time_delta, cloud_cover)
+        images = search_images(bbox_geometry, field_date, time_delta, cloud_cover)
 
         for img in images:
             scene_id = img["id"]
@@ -208,8 +270,6 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
                     continue
 
             # --- SCL tile resolution ---
-            # Pick the first href whose tile matches; fall back to the first
-            # available href when tile filtering is disabled.
             scl_hrefs = img["l2a_scl"]  # list collected by search_images
             if scl_hrefs:
                 if filter_by_tile:
@@ -232,26 +292,53 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
                 matched_scl = None
             img = {**img, "l2a_scl": matched_scl}
 
-            if scene_id not in scenes_by_date[date]:
-                scenes_by_date[date][scene_id] = img
+            if scene_id not in scenes_by_date[field_date]:
+                scenes_by_date[field_date][scene_id] = {
+                    **img,
+                    "_field_date": field_date,  # carry field_date for bucketing
+                }
                 logger.info(f"  Nova cena adicionada: {scene_id}")
             else:
                 logger.info(f"  Cena duplicada ignorada: {scene_id}")
 
-    catalog_data = [
-        {
-            "field_date": date,
-            "images_found": list(scenes.values()),
-        }
-        for date, scenes in scenes_by_date.items()
-    ]
+    # --- Build bucketed output ---
+    catalog_data = []
+    for field_date, scenes in scenes_by_date.items():
+        buckets = _empty_buckets()
+
+        for img in scenes.values():
+            acquisition_date = img["datetime"][:10]
+            bucket = _temporal_bucket(acquisition_date, field_date)
+
+            # Drop the internal helper key before storing
+            clean_img = {k: v for k, v in img.items() if k != "_field_date"}
+            buckets[bucket].append(clean_img)
+
+        # Sort each bucket: closest first, then lowest cloud cover
+        for bucket_name in buckets:
+            buckets[bucket_name].sort(key=lambda x: (x["delta_days"], x["cloud_cover"]))
+
+        catalog_data.append(
+            {
+                "field_date": field_date,
+                "images_found": buckets,
+            }
+        )
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
     with open(output_json, "w") as f:
         json.dump(catalog_data, f, indent=2)
 
+    n_dates = len(catalog_data)
+    n_images = sum(
+        len(e["images_found"]["same_day"])
+        + len(e["images_found"]["previous"])
+        + len(e["images_found"]["posterior"])
+        for e in catalog_data
+    )
     logger.info(
-        f"Catálogo salvo em {output_json} ({len(catalog_data)} datas processadas)"
+        f"Catálogo salvo em {output_json} "
+        f"({n_dates} datas processadas, {n_images} cenas no total)"
     )
 
 
@@ -377,6 +464,23 @@ def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -
 def run_download(
     catalog_json: Path, output_dir: Path, only_first=True, download_scl=True
 ):
+    """
+    Download Sentinel-2 products listed in *catalog_json*.
+
+    The catalog is expected to use the bucketed ``images_found`` schema
+    produced by :func:`build_catalog`::
+
+        {
+            "same_day":  [...],
+            "previous":  [...],
+            "posterior": [...]
+        }
+
+    When ``only_first=True`` (default) a single scene per field date is
+    selected using the priority order: ``same_day[0]`` → ``previous[0]``
+    → ``posterior[0]``.  When ``only_first=False`` all scenes across all
+    buckets are downloaded.
+    """
     with open(catalog_json, "r") as f:
         catalog_data = json.load(f)
 
@@ -391,13 +495,25 @@ def run_download(
 
     for entry in catalog_data:
         field_date = entry["field_date"]
-        images = entry["images_found"]
+        images_found = entry["images_found"]
 
-        if not images:
+        # Support both old (list) and new (dict with buckets) catalog shapes
+        # so existing catalogs continue to work during the transition period.
+        if isinstance(images_found, list):
+            all_images = images_found
+        else:
+            all_images = (
+                images_found.get("same_day", [])
+                + images_found.get("previous", [])
+                + images_found.get("posterior", [])
+            )
+
+        if not all_images:
             logger.warning(f"Nenhuma imagem para {field_date}")
             continue
 
-        to_download = images[:1] if only_first else images
+        to_download = all_images[:1] if only_first else all_images
+
         for img in to_download:
             stats["total_processed"] += 1
             product_id = img["id"]
@@ -464,7 +580,7 @@ def run_sentinel_pipeline(
     cloud_cover: int | None = None,
     only_first: bool | None = None,
     download_scl: bool | None = None,
-    mode: str = "all",  # todo change to 'mode'
+    mode: str = "all",
 ) -> dict:
     """
     Run the Sentinel-2 catalog and/or download pipeline and return a status dict.
@@ -473,7 +589,7 @@ def run_sentinel_pipeline(
 
         python -m aquamatch.sentinel_data --mode all
 
-    The ``steps`` parameter mirrors the CLI ``--mode`` flag:
+    The ``mode`` parameter mirrors the CLI ``--mode`` flag:
 
     * ``"all"``      — build catalog then download (default).
     * ``"catalog"``  — only search and write the JSON catalog.
@@ -484,7 +600,7 @@ def run_sentinel_pipeline(
     csv:
         Path to the deduplicated in situ CSV produced by
         :func:`~aquamatch.insitu_data.run_insitu_pipeline`.
-        Required for ``steps="catalog"`` or ``"all"``.
+        Required for ``mode="catalog"`` or ``"all"``.
         Defaults to ``data/monitoring_data/campaigns_unique_data.csv``.
     catalog_json:
         Path to the catalog JSON file — written by the catalog step and
@@ -500,7 +616,8 @@ def run_sentinel_pipeline(
         Maximum cloud cover percentage for scene selection.
         Defaults to ``10``.
     only_first:
-        If ``True``, download only the first matching scene per field date.
+        If ``True``, download only the best matching scene per field date
+        (same_day preferred, then previous, then posterior).
         Defaults to ``True``.
     download_scl:
         If ``True``, download the SCL (Scene Classification Layer) GeoTIFF
@@ -515,50 +632,6 @@ def run_sentinel_pipeline(
     dict
         ``{"step": "sentinel", "status": "success", "outputs": {...},
         "error": None, "elapsed_seconds": float}``
-
-        On failure the dict has ``"status": "error"`` and the exception
-        message in ``"error"``.  ``outputs`` keys depend on which steps ran:
-
-        * ``catalog_json``        — resolved path of the catalog file
-          (catalog step).
-        * ``output_dir``          — resolved root download path
-          (download step).
-        * ``download_stats``      — stats dict from :func:`run_download`
-          with keys ``total_processed``, ``already_downloaded``,
-          ``safe_downloaded``, ``scl_downloaded``, ``errors``
-          (download step).
-
-    Raises
-    ------
-    ValueError
-        If ``steps`` is not one of ``"all"``, ``"catalog"``, or
-        ``"download"``.
-
-    Examples
-    --------
-    Full pipeline using project defaults::
-
-        from aquamatch.sentinel_data import run_sentinel_pipeline
-
-        result = run_sentinel_pipeline()
-
-    Catalog only, with custom search parameters::
-
-        result = run_sentinel_pipeline(
-            csv="data/monitoring_data/campaigns_unique_data.csv",
-            catalog_json="data/sentinel_downloads/sentinel_catalog.json",
-            time_delta=2,
-            cloud_cover=20,
-            steps="catalog",
-        )
-
-    Download only, from an existing catalog::
-
-        result = run_sentinel_pipeline(
-            catalog_json="data/sentinel_downloads/sentinel_catalog.json",
-            output_dir="data/sentinel_downloads",
-            steps="download",
-        )
     """
     import time
 
@@ -568,15 +641,12 @@ def run_sentinel_pipeline(
             f"Invalid mode value '{mode}'. Must be one of: {sorted(valid_steps)}"
         )
 
-    # --- Resolve defaults from dataclass sections (single source of truth) ---
     from aquamatch.pipeline_config import DownloadSection, SentinelSection
 
     _s = SentinelSection()
     _d = DownloadSection()
 
-    unique_csv_path = (
-        Path(csv) if csv is not None else Path(_s.csv)
-    )
+    unique_csv_path = Path(csv) if csv is not None else Path(_s.csv)
     catalog_json_path = (
         Path(catalog_json) if catalog_json is not None else Path(_s.catalog_json)
     )

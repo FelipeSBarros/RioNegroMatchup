@@ -1,6 +1,6 @@
 """
 Tests for _tile_from_scene_id and the tile-filtering logic in build_catalog.
-Appended as a separate file to avoid touching the existing test suite.
+Updated to reflect the bucketed images_found schema.
 """
 
 import json
@@ -10,7 +10,6 @@ from unittest.mock import patch
 import pandas as pd
 
 from aquamatch.sentinel_data import _tile_from_scene_id, build_catalog
-
 
 # ---------------------------------------------------------------------------
 # _tile_from_scene_id
@@ -48,7 +47,7 @@ class TestTileFromSceneId:
 
 
 # ---------------------------------------------------------------------------
-# build_catalog — tile filtering
+# Helpers shared across tile filter tests
 # ---------------------------------------------------------------------------
 
 
@@ -79,8 +78,6 @@ def _make_csv_without_tile(tmp_path) -> Path:
 
 def _fake_image(tile="21HUD", scl_tile="21HUD"):
     scene_id = f"S2A_MSIL1C_20250801T101031_N0500_R024_T{tile}_20230919T094731"
-    # Use EarthSearch S3 href format (/ZZ/B/SS/) so pattern 2 of
-    # _tile_from_scene_id is exercised in the SCL tile filter.
     zone, band, square = scl_tile[:2], scl_tile[2], scl_tile[3:]
     scl_href = (
         f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/"
@@ -92,8 +89,24 @@ def _fake_image(tile="21HUD", scl_tile="21HUD"):
         "cloud_cover": 5,
         "href": "https://eodata.dataspace.copernicus.eu/eodata/fake/path",
         "delta_days": 0,
-        "l2a_scl": [scl_href],  # list, as returned by the updated search_images
+        "l2a_scl": [scl_href],
     }
+
+
+def _all_images(data: list[dict]) -> list[dict]:
+    """Flatten all buckets from a catalog entry into a single list."""
+    images = []
+    for entry in data:
+        found = entry["images_found"]
+        images.extend(found.get("same_day", []))
+        images.extend(found.get("previous", []))
+        images.extend(found.get("posterior", []))
+    return images
+
+
+# ---------------------------------------------------------------------------
+# build_catalog — tile filtering
+# ---------------------------------------------------------------------------
 
 
 class TestBuildCatalogTileFilter:
@@ -110,7 +123,7 @@ class TestBuildCatalogTileFilter:
 
         data = json.loads(output_json.read_text())
         assert len(data) == 1
-        assert len(data[0]["images_found"]) == 1
+        assert len(_all_images(data)) == 1
 
     def test_mismatched_tile_is_discarded(self, tmp_path):
         csv = _make_unique_csv(tmp_path, s2_tile="21HUD")
@@ -139,8 +152,9 @@ class TestBuildCatalogTileFilter:
             build_catalog(csv, output_json)
 
         data = json.loads(output_json.read_text())
-        assert len(data[0]["images_found"]) == 1
-        assert "T21HUD" in data[0]["images_found"][0]["id"]
+        images = _all_images(data)
+        assert len(images) == 1
+        assert "T21HUD" in images[0]["id"]
 
     def test_no_s2_tile_column_skips_filter(self, tmp_path):
         """When s2_tile is absent all scenes are kept and a warning is logged."""
@@ -149,12 +163,12 @@ class TestBuildCatalogTileFilter:
 
         with patch(
             "aquamatch.sentinel_data.search_images",
-            return_value=[_fake_image(tile="21HVD")],  # would be discarded if filtered
+            return_value=[_fake_image(tile="21HVD")],
         ):
             build_catalog(csv, output_json)
 
         data = json.loads(output_json.read_text())
-        assert len(data[0]["images_found"]) == 1
+        assert len(_all_images(data)) == 1
 
     def test_no_s2_tile_column_emits_warning(self, tmp_path, caplog):
         import logging
@@ -183,7 +197,8 @@ class TestBuildCatalogTileFilter:
             build_catalog(csv, output_json)
 
         data = json.loads(output_json.read_text())
-        assert data[0]["images_found"][0]["l2a_scl"] is None
+        images = _all_images(data)
+        assert images[0]["l2a_scl"] is None
 
     def test_matching_scl_tile_preserved(self, tmp_path):
         """SCL href from the correct tile must be kept as-is."""
@@ -198,4 +213,22 @@ class TestBuildCatalogTileFilter:
             build_catalog(csv, output_json)
 
         data = json.loads(output_json.read_text())
-        assert data[0]["images_found"][0]["l2a_scl"] is not None
+        images = _all_images(data)
+        assert images[0]["l2a_scl"] is not None
+
+    # --- Bucket placement with tile filtering active ---
+
+    def test_same_day_image_placed_in_same_day_bucket(self, tmp_path):
+        csv = _make_unique_csv(tmp_path, s2_tile="21HUD")
+        output_json = tmp_path / "catalog.json"
+
+        img = _fake_image(
+            tile="21HUD"
+        )  # datetime is 2025-08-01, field_date is 2025-08-01
+        with patch("aquamatch.sentinel_data.search_images", return_value=[img]):
+            build_catalog(csv, output_json)
+
+        data = json.loads(output_json.read_text())
+        assert len(data[0]["images_found"]["same_day"]) == 1
+        assert len(data[0]["images_found"]["previous"]) == 0
+        assert len(data[0]["images_found"]["posterior"]) == 0
