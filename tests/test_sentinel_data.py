@@ -16,6 +16,7 @@ from aquamatch.sentinel_data import (
     SCL_SUBDIR,
     _temporal_bucket,
     _empty_buckets,
+    _select_scenes,
 )
 
 # ---------------------------------------------------------------------------
@@ -57,6 +58,171 @@ class TestEmptyBuckets:
         b = _empty_buckets()
         for key in b:
             assert b[key] == []
+
+
+# ---------------------------------------------------------------------------
+# _select_scenes
+# ---------------------------------------------------------------------------
+
+
+def _make_buckets(same_day=None, previous=None, posterior=None):
+    """Build a minimal images_found dict for _select_scenes tests."""
+
+    def _imgs(ids, delta, cloud=5):
+        return [
+            {
+                "id": i,
+                "delta_days": delta,
+                "cloud_cover": cloud,
+                "datetime": "2025-08-01T10:00:00Z",
+            }
+            for i in ids
+        ]
+
+    return {
+        "same_day": _imgs(same_day or [], 0),
+        "previous": [
+            {
+                "id": i,
+                "delta_days": d,
+                "cloud_cover": 5,
+                "datetime": "2025-07-31T10:00:00Z",
+            }
+            for i, d in (previous or [])
+        ],
+        "posterior": [
+            {
+                "id": i,
+                "delta_days": d,
+                "cloud_cover": 5,
+                "datetime": "2025-08-02T10:00:00Z",
+            }
+            for i, d in (posterior or [])
+        ],
+    }
+
+
+class TestSelectScenes:
+    """Tests for _select_scenes — the Step 4 seam."""
+
+    # --- strategy="best", max_per_date=1 (mirrors only_first=True) ---
+
+    def test_best_prefers_same_day(self):
+        buckets = _make_buckets(
+            same_day=["SD"], previous=[("PV", 1)], posterior=[("PT", 1)]
+        )
+        result = _select_scenes(buckets, strategy="best", max_per_date=1)
+        assert len(result) == 1
+        assert result[0]["id"] == "SD"
+
+    def test_best_falls_back_to_previous_when_no_same_day(self):
+        buckets = _make_buckets(previous=[("PV", 1)], posterior=[("PT", 1)])
+        result = _select_scenes(buckets, strategy="best", max_per_date=1)
+        assert len(result) == 1
+        assert result[0]["id"] == "PV"
+
+    def test_best_falls_back_to_posterior_when_no_same_day_or_previous(self):
+        buckets = _make_buckets(posterior=[("PT", 1)])
+        result = _select_scenes(buckets, strategy="best", max_per_date=1)
+        assert len(result) == 1
+        assert result[0]["id"] == "PT"
+
+    def test_best_returns_empty_when_all_buckets_empty(self):
+        result = _select_scenes(_make_buckets(), strategy="best", max_per_date=1)
+        assert result == []
+
+    # --- max_per_date > 1 ---
+
+    def test_best_respects_max_per_date(self):
+        buckets = _make_buckets(same_day=["SD1", "SD2"], previous=[("PV", 1)])
+        result = _select_scenes(buckets, strategy="best", max_per_date=2)
+        assert len(result) == 2
+        assert result[0]["id"] == "SD1"
+        assert result[1]["id"] == "SD2"
+
+    def test_best_fills_quota_across_buckets(self):
+        """If same_day has 1 and quota is 2, take 1 from same_day + 1 from previous."""
+        buckets = _make_buckets(same_day=["SD"], previous=[("PV", 1)])
+        result = _select_scenes(buckets, strategy="best", max_per_date=2)
+        assert len(result) == 2
+        assert result[0]["id"] == "SD"
+        assert result[1]["id"] == "PV"
+
+    # --- strategy="all" ---
+
+    def test_all_returns_every_image(self):
+        buckets = _make_buckets(
+            same_day=["SD"], previous=[("PV", 1)], posterior=[("PT", 1)]
+        )
+        result = _select_scenes(buckets, strategy="all")
+        assert len(result) == 3
+        ids = {r["id"] for r in result}
+        assert ids == {"SD", "PV", "PT"}
+
+    def test_all_ignores_max_per_date(self):
+        buckets = _make_buckets(same_day=["SD1", "SD2"], previous=[("PV", 1)])
+        result = _select_scenes(buckets, strategy="all", max_per_date=1)
+        assert len(result) == 3
+
+    def test_all_returns_empty_when_all_buckets_empty(self):
+        result = _select_scenes(_make_buckets(), strategy="all")
+        assert result == []
+
+    # --- max_cloud_cover filter ---
+
+    def test_max_cloud_cover_filters_images(self):
+        buckets = {
+            "same_day": [
+                {"id": "HIGH", "delta_days": 0, "cloud_cover": 25, "datetime": ""}
+            ],
+            "previous": [
+                {"id": "LOW", "delta_days": 1, "cloud_cover": 5, "datetime": ""}
+            ],
+            "posterior": [],
+        }
+        result = _select_scenes(
+            buckets, strategy="best", max_per_date=1, max_cloud_cover=10
+        )
+        assert len(result) == 1
+        assert result[0]["id"] == "LOW"
+
+    def test_max_cloud_cover_none_applies_no_filter(self):
+        buckets = {
+            "same_day": [
+                {"id": "HIGH", "delta_days": 0, "cloud_cover": 80, "datetime": ""}
+            ],
+            "previous": [],
+            "posterior": [],
+        }
+        result = _select_scenes(
+            buckets, strategy="best", max_per_date=1, max_cloud_cover=None
+        )
+        assert result[0]["id"] == "HIGH"
+
+    # --- Legacy flat-list backward compatibility ---
+
+    def test_flat_list_best_returns_first(self):
+        images = [
+            {"id": "A", "delta_days": 0, "cloud_cover": 5},
+            {"id": "B", "delta_days": 1, "cloud_cover": 3},
+        ]
+        result = _select_scenes(images, strategy="best", max_per_date=1)
+        assert len(result) == 1
+        assert result[0]["id"] == "A"
+
+    def test_flat_list_all_returns_everything(self):
+        images = [{"id": "A"}, {"id": "B"}, {"id": "C"}]
+        result = _select_scenes(images, strategy="all")
+        assert len(result) == 3
+
+    def test_flat_list_cloud_filter_applied(self):
+        images = [
+            {"id": "HIGH", "cloud_cover": 30},
+            {"id": "LOW", "cloud_cover": 5},
+        ]
+        result = _select_scenes(images, strategy="all", max_cloud_cover=10)
+        assert len(result) == 1
+        assert result[0]["id"] == "LOW"
 
 
 # ---------------------------------------------------------------------------

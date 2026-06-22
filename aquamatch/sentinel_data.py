@@ -461,6 +461,93 @@ def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -
     }
 
 
+def _select_scenes(
+    images_found: "dict | list",
+    strategy: str = "best",
+    max_per_date: int = 1,
+    max_cloud_cover: "float | None" = None,
+) -> list[dict]:
+    """
+    Select scenes to download from an ``images_found`` entry.
+
+    This is the single decision point for download selection — Step 4 will
+    replace the ``strategy`` logic here without touching ``run_download``.
+
+    Parameters
+    ----------
+    images_found:
+        Either the bucketed dict ``{"same_day": [...], "previous": [...],
+        "posterior": [...]}`` from the new catalog schema, or a flat list
+        from the legacy schema.
+    strategy:
+        How to select scenes.  Currently only ``"best"`` and ``"all"`` are
+        implemented as stubs for Step 4.
+
+        * ``"best"`` — pick up to ``max_per_date`` scenes, preferring
+          ``same_day``, then ``previous``, then ``posterior``.  Within each
+          bucket scenes are already sorted by ``(delta_days, cloud_cover)``
+          so ``bucket[0]`` is always the best candidate.
+        * ``"all"``  — return every scene across all buckets.
+
+        Step 4 will add: ``"same_day"``, ``"previous"``, ``"posterior"``.
+    max_per_date:
+        Maximum number of scenes to return.  Ignored when
+        ``strategy="all"``.  Defaults to ``1``.
+    max_cloud_cover:
+        Optional cloud cover ceiling applied as a pre-filter before
+        strategy selection.  ``None`` means no additional filtering
+        (the search already applied its own ceiling).
+
+    Returns
+    -------
+    list[dict]
+        Ordered list of image dicts ready for download.
+    """
+    # --- Normalise legacy flat-list catalogs ---
+    if isinstance(images_found, list):
+        # Old schema: no bucket information available; treat the whole list
+        # as a flat pool and respect only max_per_date / max_cloud_cover.
+        pool = images_found
+        if max_cloud_cover is not None:
+            pool = [img for img in pool if img.get("cloud_cover", 0) <= max_cloud_cover]
+        if strategy == "all":
+            return pool
+        return pool[:max_per_date]
+
+    # --- Bucketed schema ---
+    same_day = images_found.get("same_day", [])
+    previous = images_found.get("previous", [])
+    posterior = images_found.get("posterior", [])
+
+    # Apply optional cloud cover pre-filter to each bucket
+    if max_cloud_cover is not None:
+        same_day = [
+            img for img in same_day if img.get("cloud_cover", 0) <= max_cloud_cover
+        ]
+        previous = [
+            img for img in previous if img.get("cloud_cover", 0) <= max_cloud_cover
+        ]
+        posterior = [
+            img for img in posterior if img.get("cloud_cover", 0) <= max_cloud_cover
+        ]
+
+    if strategy == "all":
+        return same_day + previous + posterior
+
+    # "best": fill quota from same_day first, then previous, then posterior.
+    # Buckets are pre-sorted by (delta_days, cloud_cover) so head = best.
+    selected: list[dict] = []
+    remaining = max_per_date
+    for bucket in (same_day, previous, posterior):
+        if remaining <= 0:
+            break
+        take = bucket[:remaining]
+        selected.extend(take)
+        remaining -= len(take)
+
+    return selected
+
+
 def run_download(
     catalog_json: Path, output_dir: Path, only_first=True, download_scl=True
 ):
@@ -476,10 +563,11 @@ def run_download(
             "posterior": [...]
         }
 
-    When ``only_first=True`` (default) a single scene per field date is
-    selected using the priority order: ``same_day[0]`` → ``previous[0]``
-    → ``posterior[0]``.  When ``only_first=False`` all scenes across all
-    buckets are downloaded.
+    Scene selection is delegated to :func:`_select_scenes`.  The
+    ``only_first`` flag maps to ``strategy="best", max_per_date=1`` (pick
+    the single best scene) or ``strategy="all"`` (download everything).
+    Step 4 will expose the full ``strategy`` / ``max_per_date`` /
+    ``max_cloud_cover`` parameters directly here.
     """
     with open(catalog_json, "r") as f:
         catalog_data = json.load(f)
@@ -497,22 +585,15 @@ def run_download(
         field_date = entry["field_date"]
         images_found = entry["images_found"]
 
-        # Support both old (list) and new (dict with buckets) catalog shapes
-        # so existing catalogs continue to work during the transition period.
-        if isinstance(images_found, list):
-            all_images = images_found
-        else:
-            all_images = (
-                images_found.get("same_day", [])
-                + images_found.get("previous", [])
-                + images_found.get("posterior", [])
-            )
+        to_download = _select_scenes(
+            images_found,
+            strategy="best" if only_first else "all",
+            max_per_date=1 if only_first else 9999,
+        )
 
-        if not all_images:
+        if not to_download:
             logger.warning(f"Nenhuma imagem para {field_date}")
             continue
-
-        to_download = all_images[:1] if only_first else all_images
 
         for img in to_download:
             stats["total_processed"] += 1
