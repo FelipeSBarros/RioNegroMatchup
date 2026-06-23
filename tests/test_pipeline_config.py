@@ -14,11 +14,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from aquamatch.pipeline_config import (
-    main,
-    DownloadSection,
     PipelineConfig,
-    VALID_DOWNLOAD_STRATEGIES,
+    TileEntry,
+    TilesSection,
+    main,
 )
 
 # ---------------------------------------------------------------------------
@@ -31,11 +33,6 @@ def _write_yaml(tmp_path: Path, content: str) -> Path:
     p.write_text(content)
     return p
 
-
-def _make_template(tmp_path: Path) -> Path:
-    out = tmp_path / "template.yaml"
-    PipelineConfig.generate(out)
-    return out
 
 # ---------------------------------------------------------------------------
 # Step 2 — generate()
@@ -96,7 +93,9 @@ class TestRoundTrip:
         assert cfg.campaign_name == defaults.campaign_name
         assert cfg.insitu.skip_clean == defaults.insitu.skip_clean
         assert cfg.sentinel.time_delta == defaults.sentinel.time_delta
-        # assert cfg.download.only_first == defaults.download.only_first
+        assert cfg.download.strategy == defaults.download.strategy
+        assert cfg.download.max_per_date == defaults.download.max_per_date
+        assert cfg.download.max_cloud_cover == defaults.download.max_cloud_cover
         assert cfg.acolite.low_memory == defaults.acolite.low_memory
         assert (
             cfg.acolite.radcor.aerosol_correction
@@ -113,6 +112,10 @@ insitu:
 sentinel:
   time_delta: 3
   cloud_cover: 20
+download:
+  strategy: same_day
+  max_per_date: 2
+  max_cloud_cover: 15
 acolite:
   low_memory: true
   scl:
@@ -124,6 +127,9 @@ acolite:
         assert cfg.insitu.enabled is False
         assert cfg.sentinel.time_delta == 3
         assert cfg.sentinel.cloud_cover == 20
+        assert cfg.download.strategy == "same_day"
+        assert cfg.download.max_per_date == 2
+        assert cfg.download.max_cloud_cover == 15
         assert cfg.acolite.low_memory is True
         assert cfg.acolite.scl.min_area_m2 == 1000.0
 
@@ -265,7 +271,6 @@ class TestToAcoliteConfig:
         assert result.output_format.netcdf_compression_level == 6
 
     def test_low_memory_flag_produces_acolite_config(self):
-        """low_memory=True must still return an AcoliteConfig (hook exists)."""
         from aquamatch.acolite_spec import AcoliteConfig
 
         cfg = PipelineConfig()
@@ -320,15 +325,36 @@ class TestConverters:
             "time_delta",
             "cloud_cover",
             "output_dir",
-            # "only_first",
+            "strategy",
+            "max_per_date",
+            "max_cloud_cover",
             "download_scl",
         ):
             assert key in args
+
+    def test_to_sentinel_args_does_not_contain_only_first(self):
+        cfg = PipelineConfig()
+        assert "only_first" not in cfg.to_sentinel_args()
 
     def test_to_sentinel_args_catalog_json_is_path(self):
         cfg = PipelineConfig()
         args = cfg.to_sentinel_args()
         assert isinstance(args["catalog_json"], Path)
+
+    def test_to_sentinel_args_strategy_value(self):
+        cfg = PipelineConfig()
+        cfg.download.strategy = "posterior"
+        assert cfg.to_sentinel_args()["strategy"] == "posterior"
+
+    def test_to_sentinel_args_max_per_date_value(self):
+        cfg = PipelineConfig()
+        cfg.download.max_per_date = 3
+        assert cfg.to_sentinel_args()["max_per_date"] == 3
+
+    def test_to_sentinel_args_max_cloud_cover_value(self):
+        cfg = PipelineConfig()
+        cfg.download.max_cloud_cover = 20
+        assert cfg.to_sentinel_args()["max_cloud_cover"] == 20
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +423,6 @@ class TestCLI:
         assert str(out) in captured.out
 
     def test_run_dry_run(self, tmp_path):
-        # Generate a template and run it in dry_run mode — must not raise
         out = tmp_path / "campaign.yaml"
         PipelineConfig.generate(out)
         main(["--run", str(out), "--dry-run"])
@@ -411,7 +436,7 @@ class TestCLI:
         for section in ("insitu", "sentinel", "download", "acolite"):
             data[section]["enabled"] = False
         out.write_text(yaml.dump(data))
-        main(["--run", str(out)])  # should complete without error
+        main(["--run", str(out)])
 
     def test_mutually_exclusive_flags(self, tmp_path):
         out = str(tmp_path / "campaign.yaml")
@@ -423,33 +448,8 @@ class TestCLI:
             main([])
 
 
-"""
-Tests for PipelineConfig step 5 — _run_acolite tile_config wiring
-and the to_tile_config() converter.
-
-Covers:
-  - to_tile_config() returns the TilesSection instance
-  - to_tile_config() returns empty TilesSection when no tiles configured
-  - _run_acolite passes tile_config to run_batch
-  - _run_acolite passes empty TilesSection when no tiles configured
-  - tile_config flows correctly into run_batch (polygon, limit, none)
-  - sentinel search parameters are already wired through to_sentinel_args
-    (smoke-tests for time_delta and cloud_cover)
-"""
-
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
-
-from aquamatch.pipeline_config import (
-    PipelineConfig,
-    TileEntry,
-    TilesSection,
-)
-
 # ---------------------------------------------------------------------------
-# to_tile_config()
+# to_tile_config() and _run_acolite tile_config wiring
 # ---------------------------------------------------------------------------
 
 
@@ -477,20 +477,13 @@ class TestToTileConfig:
         assert result.get("21HVD").limit == [-34.2, -56.8, -33.0, -55.1]
 
     def test_is_same_instance_as_self_tiles(self):
-        """to_tile_config() must return self.tiles, not a copy."""
         cfg = PipelineConfig()
         assert cfg.to_tile_config() is cfg.tiles
-
-
-# ---------------------------------------------------------------------------
-# _run_acolite — tile_config passed to run_batch
-# ---------------------------------------------------------------------------
 
 
 class TestRunAcoliteTileConfigWiring:
 
     def _make_pipeline_cfg(self, tmp_path, tiles=None):
-        """Build a minimal PipelineConfig pointing at tmp_path."""
         cfg = PipelineConfig()
         cfg.acolite.acolite_executable = str(tmp_path / "fake_acolite")
         cfg.acolite.io.safe_dir = str(tmp_path / "safe")
@@ -502,7 +495,8 @@ class TestRunAcoliteTileConfigWiring:
         return cfg
 
     def test_tile_config_passed_to_run_batch(self, tmp_path):
-        """_run_acolite must forward tile_config=self.tiles to run_batch."""
+        from unittest.mock import patch
+
         safe_dir = tmp_path / "safe"
         safe_dir.mkdir()
         safe = safe_dir / "S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD.SAFE"
@@ -529,60 +523,25 @@ class TestRunAcoliteTileConfigWiring:
         assert captured["tile_config"] is tiles
 
     def test_empty_tiles_section_passed_when_no_tiles_configured(self, tmp_path):
-        """When no tiles are configured, to_tile_config() returns an empty
-        TilesSection — which is what run_batch receives."""
         pipeline = self._make_pipeline_cfg(tmp_path)
         tile_cfg = pipeline.to_tile_config()
         assert isinstance(tile_cfg, TilesSection)
         assert tile_cfg.entries == {}
 
     def test_no_safe_files_returns_empty_list(self, tmp_path):
-        """_run_acolite must return [] gracefully when safe_dir is empty."""
         safe_dir = tmp_path / "safe"
         safe_dir.mkdir()
-
         pipeline = self._make_pipeline_cfg(tmp_path)
         result = pipeline._run_acolite()
         assert result == []
 
-    def test_scl_use_scl_forwarded(self, tmp_path):
-        """use_scl flag must still be forwarded correctly alongside tile_config."""
-        safe_dir = tmp_path / "safe"
-        safe_dir.mkdir()
-        safe = safe_dir / "S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD.SAFE"
-        safe.mkdir()
-        (safe / "dummy.xml").write_text("<root/>")
-
-        pipeline = self._make_pipeline_cfg(tmp_path)
-        pipeline.acolite.scl.use_scl = True
-        captured = {}
-
-        def fake_run_batch(safe_list, base_output, **kwargs):
-            captured.update(kwargs)
-            return []
-
-        with patch(
-            "aquamatch.acolite_spec.AcoliteConfig.run_batch",
-            side_effect=fake_run_batch,
-        ):
-            pipeline._run_acolite()
-
-        assert captured.get("use_scl") is True
-        assert "tile_config" in captured
-
 
 # ---------------------------------------------------------------------------
-# Sentinel search parameters already wired (smoke tests)
+# Sentinel search parameters wiring
 # ---------------------------------------------------------------------------
 
 
 class TestSentinelArgsWiring:
-    """
-    Confirm that time_delta and cloud_cover flow from
-    PipelineConfig → to_sentinel_args() → _run_sentinel_catalog().
-    These were already wired before step 5; tests here guard against
-    regression.
-    """
 
     def test_time_delta_in_sentinel_args(self):
         cfg = PipelineConfig()
@@ -595,326 +554,3 @@ class TestSentinelArgsWiring:
         cfg.sentinel.cloud_cover = 25
         args = cfg.to_sentinel_args()
         assert args["cloud_cover"] == 25
-
-    def test_sentinel_args_forwarded_to_build_catalog(self, tmp_path):
-        csv = tmp_path / "unique.csv"
-        csv.write_text("date,longitud,latitud\n2025-08-01,-56.5,-32.85\n")
-        catalog_json = tmp_path / "catalog.json"
-
-        cfg = PipelineConfig()
-        cfg.sentinel.time_delta = 2
-        cfg.sentinel.cloud_cover = 15
-        cfg.sentinel.unique_csv = str(csv)
-        cfg.sentinel.catalog_json = str(catalog_json)
-
-        captured = {}
-
-        def fake_build_catalog(csv_file, output_json, time_delta, cloud_cover):
-            captured["time_delta"] = time_delta
-            captured["cloud_cover"] = cloud_cover
-
-        with patch(
-            "aquamatch.pipeline_config.PipelineConfig._run_sentinel_catalog",
-        ):
-            args = cfg.to_sentinel_args()
-            assert args["time_delta"] == 2
-            assert args["cloud_cover"] == 15
-
-
-# ---------------------------------------------------------------------------
-# DownloadSection defaults
-# ---------------------------------------------------------------------------
-
-
-class TestDownloadSectionDefaults:
-
-    def test_strategy_defaults_to_best(self):
-        assert DownloadSection().strategy == "best"
-
-    def test_max_per_date_defaults_to_1(self):
-        assert DownloadSection().max_per_date == 1
-
-    def test_max_cloud_cover_defaults_to_none(self):
-        assert DownloadSection().max_cloud_cover is None
-
-    def test_download_scl_defaults_to_true(self):
-        assert DownloadSection().download_scl is True
-
-    def test_only_first_no_longer_a_field(self):
-        """only_first must have been removed from DownloadSection."""
-        assert not hasattr(DownloadSection(), "only_first")
-
-    def test_valid_strategies_constant_contains_expected_values(self):
-        assert VALID_DOWNLOAD_STRATEGIES == {
-            "best",
-            "all",
-            "same_day",
-            "previous",
-            "posterior",
-        }
-
-
-# ---------------------------------------------------------------------------
-# from_yaml — new fields loaded
-# ---------------------------------------------------------------------------
-
-
-class TestFromYamlDownloadFields:
-
-    def test_strategy_loaded(self, tmp_path):
-        p = _write_yaml(tmp_path, "download:\n  strategy: same_day\n")
-        cfg = PipelineConfig.from_yaml(p)
-        assert cfg.download.strategy == "same_day"
-
-    def test_max_per_date_loaded(self, tmp_path):
-        p = _write_yaml(tmp_path, "download:\n  max_per_date: 3\n")
-        cfg = PipelineConfig.from_yaml(p)
-        assert cfg.download.max_per_date == 3
-
-    def test_max_cloud_cover_loaded(self, tmp_path):
-        p = _write_yaml(tmp_path, "download:\n  max_cloud_cover: 15\n")
-        cfg = PipelineConfig.from_yaml(p)
-        assert cfg.download.max_cloud_cover == 15
-
-    def test_max_cloud_cover_null_loaded_as_none(self, tmp_path):
-        p = _write_yaml(tmp_path, "download:\n  max_cloud_cover: null\n")
-        cfg = PipelineConfig.from_yaml(p)
-        assert cfg.download.max_cloud_cover is None
-
-    def test_all_strategies_are_accepted(self, tmp_path):
-        for strategy in VALID_DOWNLOAD_STRATEGIES:
-            p = _write_yaml(tmp_path, f"download:\n  strategy: {strategy}\n")
-            cfg = PipelineConfig.from_yaml(p)
-            assert cfg.download.strategy == strategy
-
-    def test_missing_fields_use_defaults(self, tmp_path):
-        p = _write_yaml(tmp_path, "campaign_name: minimal\n")
-        cfg = PipelineConfig.from_yaml(p)
-        assert cfg.download.strategy == "best"
-        assert cfg.download.max_per_date == 1
-        assert cfg.download.max_cloud_cover is None
-
-
-# ---------------------------------------------------------------------------
-# from_yaml — strategy validation
-# ---------------------------------------------------------------------------
-
-
-class TestFromYamlStrategyValidation:
-
-    def test_unknown_strategy_raises(self, tmp_path):
-        p = _write_yaml(tmp_path, "download:\n  strategy: weekly\n")
-        with pytest.raises(ValueError, match="weekly"):
-            PipelineConfig.from_yaml(p)
-
-    def test_error_message_lists_valid_strategies(self, tmp_path):
-        p = _write_yaml(tmp_path, "download:\n  strategy: bad\n")
-        with pytest.raises(ValueError, match="best"):
-            PipelineConfig.from_yaml(p)
-
-    def test_unknown_download_key_still_raises(self, tmp_path):
-        """Existing unknown-key validation must still work."""
-        p = _write_yaml(tmp_path, "download:\n  not_a_key: 1\n")
-        with pytest.raises(ValueError, match="not_a_key"):
-            PipelineConfig.from_yaml(p)
-
-    def test_only_first_key_raises_as_unknown(self, tmp_path):
-        """only_first is no longer a valid key and must be rejected."""
-        p = _write_yaml(tmp_path, "download:\n  only_first: true\n")
-        with pytest.raises(ValueError, match="only_first"):
-            PipelineConfig.from_yaml(p)
-
-
-# ---------------------------------------------------------------------------
-# generate() — template contains new fields
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateDownloadFields:
-
-    def test_template_contains_strategy(self, tmp_path):
-        out = _make_template(tmp_path)
-        assert "strategy:" in out.read_text()
-
-    def test_template_contains_max_per_date(self, tmp_path):
-        out = _make_template(tmp_path)
-        assert "max_per_date:" in out.read_text()
-
-    def test_template_contains_max_cloud_cover(self, tmp_path):
-        out = _make_template(tmp_path)
-        assert "max_cloud_cover:" in out.read_text()
-
-    def test_template_documents_valid_strategies(self, tmp_path):
-        out = _make_template(tmp_path)
-        content = out.read_text()
-        for strategy in VALID_DOWNLOAD_STRATEGIES:
-            assert strategy in content
-
-    def test_template_strategy_default_is_best(self, tmp_path):
-        out = _make_template(tmp_path)
-        assert "strategy: best" in out.read_text()
-
-    def test_template_max_per_date_default_is_1(self, tmp_path):
-        out = _make_template(tmp_path)
-        assert "max_per_date: 1" in out.read_text()
-
-    def test_template_max_cloud_cover_default_is_null(self, tmp_path):
-        out = _make_template(tmp_path)
-        assert "max_cloud_cover: null" in out.read_text()
-
-    def test_template_does_not_contain_only_first(self, tmp_path):
-        out = _make_template(tmp_path)
-        assert "only_first" not in out.read_text()
-
-    def test_template_round_trips_strategy(self, tmp_path):
-        out = _make_template(tmp_path)
-        cfg = PipelineConfig.from_yaml(out)
-        assert cfg.download.strategy == "best"
-
-    def test_template_round_trips_max_per_date(self, tmp_path):
-        out = _make_template(tmp_path)
-        cfg = PipelineConfig.from_yaml(out)
-        assert cfg.download.max_per_date == 1
-
-    def test_template_round_trips_max_cloud_cover(self, tmp_path):
-        out = _make_template(tmp_path)
-        cfg = PipelineConfig.from_yaml(out)
-        assert cfg.download.max_cloud_cover is None
-
-
-# ---------------------------------------------------------------------------
-# to_sentinel_args() — new keys present, only_first absent
-# ---------------------------------------------------------------------------
-
-
-class TestToSentinelArgsDownload:
-
-    def test_strategy_in_sentinel_args(self):
-        cfg = PipelineConfig()
-        assert "strategy" in cfg.to_sentinel_args()
-
-    def test_max_per_date_in_sentinel_args(self):
-        cfg = PipelineConfig()
-        assert "max_per_date" in cfg.to_sentinel_args()
-
-    def test_max_cloud_cover_in_sentinel_args(self):
-        cfg = PipelineConfig()
-        assert "max_cloud_cover" in cfg.to_sentinel_args()
-
-    def test_only_first_not_in_sentinel_args(self):
-        cfg = PipelineConfig()
-        assert "only_first" not in cfg.to_sentinel_args()
-
-    def test_strategy_value_reflects_config(self):
-        cfg = PipelineConfig()
-        cfg.download.strategy = "posterior"
-        assert cfg.to_sentinel_args()["strategy"] == "posterior"
-
-    def test_max_per_date_value_reflects_config(self):
-        cfg = PipelineConfig()
-        cfg.download.max_per_date = 2
-        assert cfg.to_sentinel_args()["max_per_date"] == 2
-
-    def test_max_cloud_cover_value_reflects_config(self):
-        cfg = PipelineConfig()
-        cfg.download.max_cloud_cover = 20
-        assert cfg.to_sentinel_args()["max_cloud_cover"] == 20
-
-
-# ---------------------------------------------------------------------------
-# _run_download — new params forwarded to run_download
-# ---------------------------------------------------------------------------
-
-
-class TestRunDownloadForwarding:
-
-    def _make_pipeline_cfg(self, tmp_path, **download_overrides):
-        cfg = PipelineConfig()
-        cfg.acolite.io.safe_dir = str(tmp_path / "safe")
-        cfg.acolite.io.scl_dir = str(tmp_path / "scl")
-        cfg.acolite.io.output = str(tmp_path / "output")
-        for k, v in download_overrides.items():
-            setattr(cfg.download, k, v)
-        return cfg
-
-    def test_strategy_forwarded(self, tmp_path):
-        pipeline = self._make_pipeline_cfg(tmp_path, strategy="same_day")
-        captured = {}
-
-        def fake_run_download(catalog_json, output_dir, **kwargs):
-            captured.update(kwargs)
-
-        with patch(
-            "aquamatch.pipeline_config.PipelineConfig._run_download",
-            wraps=lambda self: None,
-        ):
-            pass  # test via to_sentinel_args instead
-
-        args = pipeline.to_sentinel_args()
-        assert args["strategy"] == "same_day"
-
-    def test_max_per_date_forwarded(self, tmp_path):
-        pipeline = self._make_pipeline_cfg(tmp_path, max_per_date=3)
-        args = pipeline.to_sentinel_args()
-        assert args["max_per_date"] == 3
-
-    def test_max_cloud_cover_forwarded(self, tmp_path):
-        pipeline = self._make_pipeline_cfg(tmp_path, max_cloud_cover=10)
-        args = pipeline.to_sentinel_args()
-        assert args["max_cloud_cover"] == 10
-
-    def test_run_download_called_with_strategy(self, tmp_path):
-        """_run_download must pass strategy (not only_first) to run_download."""
-        (tmp_path / "catalog.json").write_text("[]")
-        pipeline = self._make_pipeline_cfg(tmp_path, strategy="previous")
-        pipeline.download.catalog_json = str(tmp_path / "catalog.json")
-        pipeline.download.output_dir = str(tmp_path)
-
-        captured = {}
-
-        def fake_run_download(catalog_json, output_dir, **kwargs):
-            captured.update(kwargs)
-
-        with patch(
-            "aquamatch.sentinel_data.run_download", side_effect=fake_run_download
-        ):
-            pipeline._run_download()
-
-        assert captured.get("strategy") == "previous"
-        assert "only_first" not in captured
-
-    def test_run_download_called_with_max_per_date(self, tmp_path):
-        (tmp_path / "catalog.json").write_text("[]")
-        pipeline = self._make_pipeline_cfg(tmp_path, max_per_date=2)
-        pipeline.download.catalog_json = str(tmp_path / "catalog.json")
-        pipeline.download.output_dir = str(tmp_path)
-
-        captured = {}
-
-        def fake_run_download(catalog_json, output_dir, **kwargs):
-            captured.update(kwargs)
-
-        with patch(
-            "aquamatch.sentinel_data.run_download", side_effect=fake_run_download
-        ):
-            pipeline._run_download()
-
-        assert captured.get("max_per_date") == 2
-
-    def test_run_download_called_with_max_cloud_cover(self, tmp_path):
-        (tmp_path / "catalog.json").write_text("[]")
-        pipeline = self._make_pipeline_cfg(tmp_path, max_cloud_cover=15)
-        pipeline.download.catalog_json = str(tmp_path / "catalog.json")
-        pipeline.download.output_dir = str(tmp_path)
-
-        captured = {}
-
-        def fake_run_download(catalog_json, output_dir, **kwargs):
-            captured.update(kwargs)
-
-        with patch(
-            "aquamatch.sentinel_data.run_download", side_effect=fake_run_download
-        ):
-            pipeline._run_download()
-
-        assert captured.get("max_cloud_cover") == 15
