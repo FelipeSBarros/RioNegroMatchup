@@ -470,9 +470,6 @@ def _select_scenes(
     """
     Select scenes to download from an ``images_found`` entry.
 
-    This is the single decision point for download selection — Step 4 will
-    replace the ``strategy`` logic here without touching ``run_download``.
-
     Parameters
     ----------
     images_found:
@@ -480,16 +477,21 @@ def _select_scenes(
         "posterior": [...]}`` from the new catalog schema, or a flat list
         from the legacy schema.
     strategy:
-        How to select scenes.  Currently only ``"best"`` and ``"all"`` are
-        implemented as stubs for Step 4.
+        How to select scenes.
 
-        * ``"best"`` — pick up to ``max_per_date`` scenes, preferring
-          ``same_day``, then ``previous``, then ``posterior``.  Within each
-          bucket scenes are already sorted by ``(delta_days, cloud_cover)``
-          so ``bucket[0]`` is always the best candidate.
-        * ``"all"``  — return every scene across all buckets.
+        * ``"best"``      — fill quota from ``same_day`` first, then
+          ``previous``, then ``posterior``.
+        * ``"all"``       — return every scene across all buckets.
+        * ``"same_day"``  — return only scenes from the ``same_day``
+          bucket; skip the date entirely if none are available.
+        * ``"previous"``  — prefer ``same_day``; fall back to
+          ``previous`` only.  Posterior scenes are never included.
+        * ``"posterior"`` — prefer ``same_day``; fall back to
+          ``posterior`` only.  Previous scenes are never included.
 
-        Step 4 will add: ``"same_day"``, ``"previous"``, ``"posterior"``.
+        Within each bucket scenes are already sorted by
+        ``(delta_days, cloud_cover)`` ascending, so ``bucket[0]`` is
+        always the best candidate.
     max_per_date:
         Maximum number of scenes to return.  Ignored when
         ``strategy="all"``.  Defaults to ``1``.
@@ -505,8 +507,6 @@ def _select_scenes(
     """
     # --- Normalise legacy flat-list catalogs ---
     if isinstance(images_found, list):
-        # Old schema: no bucket information available; treat the whole list
-        # as a flat pool and respect only max_per_date / max_cloud_cover.
         pool = images_found
         if max_cloud_cover is not None:
             pool = [img for img in pool if img.get("cloud_cover", 0) <= max_cloud_cover]
@@ -534,11 +534,22 @@ def _select_scenes(
     if strategy == "all":
         return same_day + previous + posterior
 
-    # "best": fill quota from same_day first, then previous, then posterior.
-    # Buckets are pre-sorted by (delta_days, cloud_cover) so head = best.
+    if strategy == "same_day":
+        return same_day[:max_per_date]
+
+    if strategy == "previous":
+        # same_day preferred; fall back to previous only — never posterior
+        buckets = (same_day, previous)
+    elif strategy == "posterior":
+        # same_day preferred; fall back to posterior only — never previous
+        buckets = (same_day, posterior)
+    else:
+        # "best": fill quota across all three buckets in priority order
+        buckets = (same_day, previous, posterior)
+
     selected: list[dict] = []
     remaining = max_per_date
-    for bucket in (same_day, previous, posterior):
+    for bucket in buckets:
         if remaining <= 0:
             break
         take = bucket[:remaining]

@@ -199,7 +199,135 @@ class TestSelectScenes:
         )
         assert result[0]["id"] == "HIGH"
 
-    # --- Legacy flat-list backward compatibility ---
+    # --- strategy="same_day" ---
+
+    def test_same_day_returns_only_same_day_bucket(self):
+        buckets = _make_buckets(
+            same_day=["SD"], previous=[("PV", 1)], posterior=[("PT", 1)]
+        )
+        result = _select_scenes(buckets, strategy="same_day", max_per_date=1)
+        assert len(result) == 1
+        assert result[0]["id"] == "SD"
+
+    def test_same_day_returns_empty_when_no_same_day(self):
+        buckets = _make_buckets(previous=[("PV", 1)], posterior=[("PT", 1)])
+        result = _select_scenes(buckets, strategy="same_day", max_per_date=1)
+        assert result == []
+
+    def test_same_day_never_returns_previous_or_posterior(self):
+        buckets = _make_buckets(previous=[("PV", 1)], posterior=[("PT", 1)])
+        result = _select_scenes(buckets, strategy="same_day")
+        ids = {r["id"] for r in result}
+        assert "PV" not in ids
+        assert "PT" not in ids
+
+    def test_same_day_respects_max_per_date(self):
+        buckets = _make_buckets(same_day=["SD1", "SD2", "SD3"])
+        result = _select_scenes(buckets, strategy="same_day", max_per_date=2)
+        assert len(result) == 2
+
+    # --- strategy="previous" ---
+
+    def test_previous_returns_same_day_when_available(self):
+        buckets = _make_buckets(
+            same_day=["SD"], previous=[("PV", 1)], posterior=[("PT", 1)]
+        )
+        result = _select_scenes(buckets, strategy="previous", max_per_date=1)
+        assert result[0]["id"] == "SD"
+
+    def test_previous_falls_back_to_previous_when_no_same_day(self):
+        buckets = _make_buckets(previous=[("PV", 1)], posterior=[("PT", 1)])
+        result = _select_scenes(buckets, strategy="previous", max_per_date=1)
+        assert len(result) == 1
+        assert result[0]["id"] == "PV"
+
+    def test_previous_never_returns_posterior(self):
+        buckets = _make_buckets(posterior=[("PT", 1)])
+        result = _select_scenes(buckets, strategy="previous", max_per_date=1)
+        assert result == []
+
+    def test_previous_fills_quota_from_same_day_and_previous(self):
+        buckets = _make_buckets(
+            same_day=["SD"], previous=[("PV", 1)], posterior=[("PT", 1)]
+        )
+        result = _select_scenes(buckets, strategy="previous", max_per_date=2)
+        assert len(result) == 2
+        ids = [r["id"] for r in result]
+        assert "SD" in ids
+        assert "PV" in ids
+        assert "PT" not in ids
+
+    # --- strategy="posterior" ---
+
+    def test_posterior_returns_same_day_when_available(self):
+        buckets = _make_buckets(
+            same_day=["SD"], previous=[("PV", 1)], posterior=[("PT", 1)]
+        )
+        result = _select_scenes(buckets, strategy="posterior", max_per_date=1)
+        assert result[0]["id"] == "SD"
+
+    def test_posterior_falls_back_to_posterior_when_no_same_day(self):
+        buckets = _make_buckets(previous=[("PV", 1)], posterior=[("PT", 1)])
+        result = _select_scenes(buckets, strategy="posterior", max_per_date=1)
+        assert len(result) == 1
+        assert result[0]["id"] == "PT"
+
+    def test_posterior_never_returns_previous(self):
+        buckets = _make_buckets(previous=[("PV", 1)])
+        result = _select_scenes(buckets, strategy="posterior", max_per_date=1)
+        assert result == []
+
+    def test_posterior_fills_quota_from_same_day_and_posterior(self):
+        buckets = _make_buckets(
+            same_day=["SD"], previous=[("PV", 1)], posterior=[("PT", 1)]
+        )
+        result = _select_scenes(buckets, strategy="posterior", max_per_date=2)
+        assert len(result) == 2
+        ids = [r["id"] for r in result]
+        assert "SD" in ids
+        assert "PT" in ids
+        assert "PV" not in ids
+
+    # --- cloud cover filter interacts correctly with all strategies ---
+
+    def test_same_day_cloud_filter_applied(self):
+        buckets = {
+            "same_day": [
+                {"id": "HIGH", "delta_days": 0, "cloud_cover": 30, "datetime": ""}
+            ],
+            "previous": [],
+            "posterior": [],
+        }
+        result = _select_scenes(
+            buckets, strategy="same_day", max_per_date=1, max_cloud_cover=10
+        )
+        assert result == []
+
+    def test_previous_cloud_filter_applied_to_fallback(self):
+        buckets = {
+            "same_day": [],
+            "previous": [
+                {"id": "HIGH", "delta_days": 1, "cloud_cover": 30, "datetime": ""}
+            ],
+            "posterior": [],
+        }
+        result = _select_scenes(
+            buckets, strategy="previous", max_per_date=1, max_cloud_cover=10
+        )
+        assert result == []
+
+    def test_posterior_cloud_filter_applied_to_fallback(self):
+        buckets = {
+            "same_day": [],
+            "previous": [],
+            "posterior": [
+                {"id": "HIGH", "delta_days": 1, "cloud_cover": 30, "datetime": ""}
+            ],
+        }
+        result = _select_scenes(
+            buckets, strategy="posterior", max_per_date=1, max_cloud_cover=10
+        )
+        assert result == []
 
     def test_flat_list_best_returns_first(self):
         images = [
