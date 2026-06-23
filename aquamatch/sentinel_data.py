@@ -822,9 +822,10 @@ def run_sentinel_pipeline(
         }
 
 
-if __name__ == "__main__":
+def _build_sentinel_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Pipeline Sentinel-2 (catalogar e baixar imagens)"
+        prog="python -m aquamatch.sentinel_data",
+        description="Pipeline Sentinel-2 (catalogar e baixar imagens)",
     )
     parser.add_argument(
         "--mode",
@@ -859,7 +860,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--time-delta", type=int, default=1, help="Intervalo de dias para busca"
     )
-    parser.add_argument("--cloud-cover", type=int, default=10, help="Nuvem máxima (%)")
+    parser.add_argument("--cloud-cover", type=int, default=10, help="Nuvem máxima (%%)")
     parser.add_argument(
         "--strategy",
         default="best",
@@ -882,8 +883,12 @@ if __name__ == "__main__":
         default=None,
         help="Optional secondary cloud cover ceiling applied at download time.",
     )
+    return parser
 
-    args = parser.parse_args()
+
+if __name__ == "__main__":
+    _parser = _build_sentinel_parser()
+    args = _parser.parse_args()
 
     result = run_sentinel_pipeline(
         csv=args.csv,
