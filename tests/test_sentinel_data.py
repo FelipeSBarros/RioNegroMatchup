@@ -105,7 +105,7 @@ def _make_buckets(same_day=None, previous=None, posterior=None):
 class TestSelectScenes:
     """Tests for _select_scenes — the Step 4 seam."""
 
-    # --- strategy="best", max_per_date=1 (mirrors only_first=True) ---
+    # --- strategy="best", max_per_date=1 (mirrors strategy="best", max_per_date=1) ---
 
     def test_best_prefers_same_day(self):
         buckets = _make_buckets(
@@ -720,7 +720,9 @@ class TestRunDownloadBucketedSchema:
                 "all_downloaded": False,
             },
         ):
-            stats = run_download(catalog, tmp_path, only_first=True, download_scl=False)
+            stats = run_download(
+                catalog, tmp_path, strategy="best", max_per_date=1, download_scl=False
+            )
         assert stats["total_processed"] == 1
 
     def test_processes_previous_image_when_no_same_day(self, tmp_path):
@@ -735,7 +737,9 @@ class TestRunDownloadBucketedSchema:
                 "all_downloaded": False,
             },
         ):
-            stats = run_download(catalog, tmp_path, only_first=True, download_scl=False)
+            stats = run_download(
+                catalog, tmp_path, strategy="best", max_per_date=1, download_scl=False
+            )
         assert stats["total_processed"] == 1
 
     def test_empty_buckets_skips_date(self, tmp_path):
@@ -748,10 +752,12 @@ class TestRunDownloadBucketedSchema:
         catalog = tmp_path / "catalog.json"
         catalog.write_text(json.dumps(catalog_data))
         with patch("aquamatch.sentinel_data.download_product") as mock_dl:
-            run_download(catalog, tmp_path, only_first=True, download_scl=False)
+            run_download(
+                catalog, tmp_path, strategy="best", max_per_date=1, download_scl=False
+            )
         mock_dl.assert_not_called()
 
-    def test_only_first_downloads_one_image_across_all_buckets(self, tmp_path):
+    def test_strategy_best_downloads_one_image_across_all_buckets(self, tmp_path):
         img = {
             "id": "IMG1",
             "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG1/path",
@@ -783,10 +789,12 @@ class TestRunDownloadBucketedSchema:
                 "all_downloaded": False,
             },
         ):
-            run_download(catalog, tmp_path, only_first=True, download_scl=False)
+            run_download(
+                catalog, tmp_path, strategy="best", max_per_date=1, download_scl=False
+            )
         assert mock_dl.call_count == 1
 
-    def test_only_first_false_downloads_all_images(self, tmp_path):
+    def test_strategy_all_downloads_all_images(self, tmp_path):
         img = {
             "id": "IMG1",
             "href": "https://eodata.dataspace.copernicus.eu/eodata/IMG1/path",
@@ -816,7 +824,7 @@ class TestRunDownloadBucketedSchema:
                 "all_downloaded": False,
             },
         ):
-            run_download(catalog, tmp_path, only_first=False, download_scl=False)
+            run_download(catalog, tmp_path, strategy="all", download_scl=False)
         assert mock_dl.call_count == 3
 
     def test_backward_compat_with_flat_list_catalog(self, tmp_path):
@@ -847,7 +855,9 @@ class TestRunDownloadBucketedSchema:
                 "all_downloaded": False,
             },
         ):
-            stats = run_download(catalog, tmp_path, only_first=True, download_scl=False)
+            stats = run_download(
+                catalog, tmp_path, strategy="best", max_per_date=1, download_scl=False
+            )
         assert mock_dl.call_count == 1
 
 
@@ -1002,7 +1012,7 @@ class TestRunDownload:
         catalog_json.write_text(json.dumps(catalog_data))
         return catalog_json
 
-    def test_only_first_downloads_one_per_date(self, tmp_path):
+    def test_strategy_best_downloads_one_per_date(self, tmp_path):
         catalog_json = self._make_catalog(tmp_path)
         with patch("aquamatch.sentinel_data.download_product") as mock_dl, patch(
             "aquamatch.sentinel_data.download_scl_asset"
@@ -1014,10 +1024,16 @@ class TestRunDownload:
                 "all_downloaded": False,
             },
         ):
-            run_download(catalog_json, tmp_path, only_first=True, download_scl=False)
+            run_download(
+                catalog_json,
+                tmp_path,
+                strategy="best",
+                max_per_date=1,
+                download_scl=False,
+            )
             assert mock_dl.call_count == 2
 
-    def test_all_images_downloaded_when_not_only_first(self, tmp_path):
+    def test_strategy_all_downloads_all_images_in_catalog(self, tmp_path):
         catalog_json = self._make_catalog(tmp_path)
         with patch("aquamatch.sentinel_data.download_product") as mock_dl, patch(
             "aquamatch.sentinel_data.download_scl_asset"
@@ -1029,7 +1045,7 @@ class TestRunDownload:
                 "all_downloaded": False,
             },
         ):
-            run_download(catalog_json, tmp_path, only_first=False, download_scl=False)
+            run_download(catalog_json, tmp_path, strategy="all", download_scl=False)
             assert mock_dl.call_count == 3
 
     def test_skips_already_downloaded(self, tmp_path):
@@ -1042,5 +1058,11 @@ class TestRunDownload:
                 "all_downloaded": True,
             },
         ):
-            run_download(catalog_json, tmp_path, only_first=True, download_scl=True)
+            run_download(
+                catalog_json,
+                tmp_path,
+                strategy="best",
+                max_per_date=1,
+                download_scl=True,
+            )
             mock_dl.assert_not_called()

@@ -549,7 +549,12 @@ def _select_scenes(
 
 
 def run_download(
-    catalog_json: Path, output_dir: Path, only_first=True, download_scl=True
+    catalog_json: Path,
+    output_dir: Path,
+    strategy: str = "best",
+    max_per_date: int = 1,
+    max_cloud_cover: "int | None" = None,
+    download_scl: bool = True,
 ):
     """
     Download Sentinel-2 products listed in *catalog_json*.
@@ -563,11 +568,27 @@ def run_download(
             "posterior": [...]
         }
 
-    Scene selection is delegated to :func:`_select_scenes`.  The
-    ``only_first`` flag maps to ``strategy="best", max_per_date=1`` (pick
-    the single best scene) or ``strategy="all"`` (download everything).
-    Step 4 will expose the full ``strategy`` / ``max_per_date`` /
-    ``max_cloud_cover`` parameters directly here.
+    Scene selection is delegated to :func:`_select_scenes`.
+
+    Parameters
+    ----------
+    catalog_json:
+        Path to the catalog JSON file produced by :func:`build_catalog`.
+    output_dir:
+        Root directory for downloaded SAFE products and SCL files.
+    strategy:
+        Download selection strategy — passed directly to
+        :func:`_select_scenes`.  One of ``"best"``, ``"all"``,
+        ``"same_day"``, ``"previous"``, ``"posterior"``.
+        Defaults to ``"best"``.
+    max_per_date:
+        Maximum number of scenes to download per field date.
+        Ignored when ``strategy="all"``.  Defaults to ``1``.
+    max_cloud_cover:
+        Optional secondary cloud cover ceiling applied at download time.
+        ``None`` means no additional filtering beyond the search ceiling.
+    download_scl:
+        If ``True``, download the SCL GeoTIFF alongside each SAFE product.
     """
     with open(catalog_json, "r") as f:
         catalog_data = json.load(f)
@@ -587,8 +608,9 @@ def run_download(
 
         to_download = _select_scenes(
             images_found,
-            strategy="best" if only_first else "all",
-            max_per_date=1 if only_first else 9999,
+            strategy=strategy,
+            max_per_date=max_per_date,
+            max_cloud_cover=max_cloud_cover,
         )
 
         if not to_download:
@@ -659,33 +681,22 @@ def run_sentinel_pipeline(
     output_dir: "Path | str | None" = None,
     time_delta: int | None = None,
     cloud_cover: int | None = None,
-    only_first: bool | None = None,
+    strategy: "str | None" = None,
+    max_per_date: "int | None" = None,
+    max_cloud_cover: "int | None" = None,
     download_scl: bool | None = None,
     mode: str = "all",
 ) -> dict:
     """
     Run the Sentinel-2 catalog and/or download pipeline and return a status dict.
 
-    This is the importable equivalent of::
-
-        python -m aquamatch.sentinel_data --mode all
-
-    The ``mode`` parameter mirrors the CLI ``--mode`` flag:
-
-    * ``"all"``      — build catalog then download (default).
-    * ``"catalog"``  — only search and write the JSON catalog.
-    * ``"download"`` — only download products from an existing catalog.
-
     Parameters
     ----------
     csv:
-        Path to the deduplicated in situ CSV produced by
-        :func:`~aquamatch.insitu_data.run_insitu_pipeline`.
-        Required for ``mode="catalog"`` or ``"all"``.
+        Path to the deduplicated in situ CSV.
         Defaults to ``data/monitoring_data/campaigns_unique_data.csv``.
     catalog_json:
-        Path to the catalog JSON file — written by the catalog step and
-        read by the download step.
+        Path to the catalog JSON file.
         Defaults to ``data/sentinel_downloads/sentinel_catalog.json``.
     output_dir:
         Root directory for downloaded SAFE products and SCL files.
@@ -696,13 +707,18 @@ def run_sentinel_pipeline(
     cloud_cover:
         Maximum cloud cover percentage for scene selection.
         Defaults to ``10``.
-    only_first:
-        If ``True``, download only the best matching scene per field date
-        (same_day preferred, then previous, then posterior).
-        Defaults to ``True``.
+    strategy:
+        Download selection strategy forwarded to :func:`run_download`.
+        One of ``"best"``, ``"all"``, ``"same_day"``, ``"previous"``,
+        ``"posterior"``.  Defaults to ``"best"``.
+    max_per_date:
+        Maximum number of scenes to download per field date.
+        Ignored when ``strategy="all"``.  Defaults to ``1``.
+    max_cloud_cover:
+        Optional secondary cloud cover ceiling applied at download time.
+        ``None`` means no additional filtering.
     download_scl:
-        If ``True``, download the SCL (Scene Classification Layer) GeoTIFF
-        alongside each SAFE product.
+        If ``True``, download the SCL GeoTIFF alongside each SAFE product.
         Defaults to ``True``.
     mode:
         Which pipeline stages to run.  One of ``"all"``, ``"catalog"``,
@@ -736,7 +752,11 @@ def run_sentinel_pipeline(
     )
     time_delta = time_delta if time_delta is not None else _s.time_delta
     cloud_cover = cloud_cover if cloud_cover is not None else _s.cloud_cover
-    _only_first = only_first if only_first is not None else _d.only_first
+    _strategy = strategy if strategy is not None else _d.strategy
+    _max_per_date = max_per_date if max_per_date is not None else _d.max_per_date
+    _max_cloud_cover = (
+        max_cloud_cover if max_cloud_cover is not None else _d.max_cloud_cover
+    )
     _download_scl = download_scl if download_scl is not None else _d.download_scl
 
     t0 = time.monotonic()
@@ -764,7 +784,9 @@ def run_sentinel_pipeline(
             download_stats = run_download(
                 catalog_json=catalog_json_path,
                 output_dir=output_dir_path,
-                only_first=_only_first,
+                strategy=_strategy,
+                max_per_date=_max_per_date,
+                max_cloud_cover=_max_cloud_cover,
                 download_scl=_download_scl,
             )
             outputs["output_dir"] = output_dir_path
@@ -828,10 +850,26 @@ if __name__ == "__main__":
     )
     parser.add_argument("--cloud-cover", type=int, default=10, help="Nuvem máxima (%)")
     parser.add_argument(
-        "--only-first",
-        action="store_true",
-        default=True,
-        help="Baixar apenas a primeira imagem encontrada",
+        "--strategy",
+        default="best",
+        choices=["best", "all", "same_day", "previous", "posterior"],
+        help=(
+            "Download selection strategy. "
+            "best: same_day → previous → posterior (default). "
+            "all: download every scene found."
+        ),
+    )
+    parser.add_argument(
+        "--max-per-date",
+        type=int,
+        default=1,
+        help="Maximum number of scenes to download per field date (ignored for 'all').",
+    )
+    parser.add_argument(
+        "--max-cloud-cover",
+        type=int,
+        default=None,
+        help="Optional secondary cloud cover ceiling applied at download time.",
     )
 
     args = parser.parse_args()
@@ -842,7 +880,9 @@ if __name__ == "__main__":
         output_dir=args.output,
         time_delta=args.time_delta,
         cloud_cover=args.cloud_cover,
-        only_first=args.only_first,
+        strategy=args.strategy,
+        max_per_date=args.max_per_date,
+        max_cloud_cover=args.max_cloud_cover,
         download_scl=args.download_scl,
         mode=args.mode,
     )
