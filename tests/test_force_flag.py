@@ -61,7 +61,6 @@ class TestParserForceFlag:
     def test_force_is_store_true(self):
         """--force must be a boolean flag, not a value argument."""
         parser = _build_parser()
-        # If it were a value arg this would raise or assign "config.yaml" to force
         args = parser.parse_args(["--run", "config.yaml", "--force"])
         assert isinstance(args.force, bool)
 

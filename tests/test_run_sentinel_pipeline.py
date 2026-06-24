@@ -9,13 +9,6 @@ run_download() calls boto3 S3 and requests.get().
 All external I/O is patched at the call-site level so no real credentials or
 network access are needed.  The conftest already patches Client.open() at
 collection time; these tests patch the individual search/download calls.
-
-Conventions (matching the existing test suite)
-----------------------------------------------
-- One class per logical unit under test.
-- Real files written to tmp_path where disk I/O is exercised.
-- External calls mocked with unittest.mock.patch / MagicMock.
-- pytest.approx for floats; plain assert for everything else.
 """
 
 import json
@@ -32,23 +25,28 @@ from aquamatch.pipeline_config import SentinelSection, DownloadSection
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-# Minimal catalog JSON structure (one field date, one scene).
 _SCENE_ID = "S2A_MSIL1C_20240315T135111_N0500_R024_T21HUD_20240315T160000"
 _CATALOG_ENTRY = [
     {
         "field_date": "2024-03-15",
-        "images_found": [
-            {
-                "id": _SCENE_ID,
-                "datetime": "2024-03-15T13:51:11Z",
-                "cloud_cover": 5.0,
-                "href": "s3://eodata/Sentinel-2/MSI/L1C/2024/03/15/"
-                + _SCENE_ID
-                + ".SAFE",
-                "delta_days": 0,
-                "l2a_scl": "https://example.com/SCL.tif",
-            }
-        ],
+        "images_found": {
+            "same_day": [
+                {
+                    "id": _SCENE_ID,
+                    "datetime": "2024-03-15T13:51:11Z",
+                    "cloud_cover": 5.0,
+                    "href": (
+                        "s3://eodata/Sentinel-2/MSI/L1C/2024/03/15/"
+                        + _SCENE_ID
+                        + ".SAFE"
+                    ),
+                    "delta_days": 0,
+                    "l2a_scl": "https://example.com/SCL.tif",
+                }
+            ],
+            "previous": [],
+            "posterior": [],
+        },
     }
 ]
 
@@ -84,14 +82,12 @@ def _make_safe_dir(output_dir: Path, scene_id: str) -> Path:
 
 
 class TestRunDownloadReturnsStats:
-    """run_download() must now return its stats dict (non-breaking addition)."""
+    """run_download() must return its stats dict."""
 
     def test_returns_dict(self, tmp_path):
         catalog_file = tmp_path / "catalog.json"
         _write_catalog_json(catalog_file)
-        # Mark SAFE as already downloaded so no real S3 call is needed.
         _make_safe_dir(tmp_path, _SCENE_ID)
-        # SCL already present too.
         scl_dir = tmp_path / "scl"
         scl_dir.mkdir()
         (scl_dir / f"{_SCENE_ID}_SCL.tif").write_text("x")
@@ -99,7 +95,8 @@ class TestRunDownloadReturnsStats:
         result = run_download(
             catalog_json=catalog_file,
             output_dir=tmp_path,
-            only_first=True,
+            strategy="best",
+            max_per_date=1,
             download_scl=True,
         )
 
@@ -116,7 +113,8 @@ class TestRunDownloadReturnsStats:
         result = run_download(
             catalog_json=catalog_file,
             output_dir=tmp_path,
-            only_first=True,
+            strategy="best",
+            max_per_date=1,
             download_scl=True,
         )
 
@@ -140,7 +138,8 @@ class TestRunDownloadReturnsStats:
         result = run_download(
             catalog_json=catalog_file,
             output_dir=tmp_path,
-            only_first=True,
+            strategy="best",
+            max_per_date=1,
             download_scl=True,
         )
 
@@ -162,7 +161,6 @@ class TestRunSentinelPipelineValidation:
             run_sentinel_pipeline(mode="invalid")
 
     def test_valid_steps_do_not_raise(self, tmp_path):
-        """All three valid step values must be accepted (network calls mocked)."""
         catalog_file = tmp_path / "catalog.json"
         _write_catalog_json(catalog_file)
         _make_safe_dir(tmp_path, _SCENE_ID)
@@ -170,18 +168,84 @@ class TestRunSentinelPipelineValidation:
         scl_dir.mkdir()
         (scl_dir / f"{_SCENE_ID}_SCL.tif").write_text("x")
 
-        for step in ("download",):  # only download avoids build_catalog network call
+        for step in ("download",):
             result = run_sentinel_pipeline(
                 catalog_json=catalog_file,
                 output_dir=tmp_path,
                 mode=step,
             )
-            # Should not raise; status depends on network mocking done elsewhere
             assert "step" in result
 
 
 class TestRunSentinelPipelineDefaults:
     """None arguments must resolve to pipeline_config dataclass defaults."""
+
+    def test_none_strategy_resolves_to_download_section_default(self, tmp_path):
+        catalog_file = tmp_path / "catalog.json"
+        _write_catalog_json(catalog_file)
+        _make_safe_dir(tmp_path, _SCENE_ID)
+        scl_dir = tmp_path / "scl"
+        scl_dir.mkdir()
+        (scl_dir / f"{_SCENE_ID}_SCL.tif").write_text("x")
+
+        captured = {}
+
+        def fake_run_download(catalog_json, output_dir, **kwargs):
+            captured.update(kwargs)
+
+        with patch(
+            "aquamatch.sentinel_data.run_download", side_effect=fake_run_download
+        ):
+            run_sentinel_pipeline(
+                catalog_json=catalog_file,
+                output_dir=tmp_path,
+                mode="download",
+                strategy=None,
+            )
+
+        assert captured["strategy"] == DownloadSection().strategy
+
+    def test_none_max_per_date_resolves_to_default(self, tmp_path):
+        catalog_file = tmp_path / "catalog.json"
+        _write_catalog_json(catalog_file)
+
+        captured = {}
+
+        def fake_run_download(catalog_json, output_dir, **kwargs):
+            captured.update(kwargs)
+
+        with patch(
+            "aquamatch.sentinel_data.run_download", side_effect=fake_run_download
+        ):
+            run_sentinel_pipeline(
+                catalog_json=catalog_file,
+                output_dir=tmp_path,
+                mode="download",
+                max_per_date=None,
+            )
+
+        assert captured["max_per_date"] == DownloadSection().max_per_date
+
+    def test_none_max_cloud_cover_resolves_to_none(self, tmp_path):
+        catalog_file = tmp_path / "catalog.json"
+        _write_catalog_json(catalog_file)
+
+        captured = {}
+
+        def fake_run_download(catalog_json, output_dir, **kwargs):
+            captured.update(kwargs)
+
+        with patch(
+            "aquamatch.sentinel_data.run_download", side_effect=fake_run_download
+        ):
+            run_sentinel_pipeline(
+                catalog_json=catalog_file,
+                output_dir=tmp_path,
+                mode="download",
+                max_cloud_cover=None,
+            )
+
+        assert captured["max_cloud_cover"] is None
 
     def test_none_unique_csv_resolves_to_sentinel_section_default(self):
         with patch("aquamatch.pipeline_config.SentinelSection") as mock_section:
@@ -199,16 +263,16 @@ class TestRunSentinelPipelineDefaults:
     def test_none_output_dir_resolves_to_download_section_default(self, tmp_path):
         catalog_file = tmp_path / "catalog.json"
         _write_catalog_json(catalog_file)
-
         _make_safe_dir(tmp_path, _SCENE_ID)
-
         scl_dir = tmp_path / "scl"
         scl_dir.mkdir()
         (scl_dir / f"{_SCENE_ID}_SCL.tif").write_text("x")
 
         with patch("aquamatch.pipeline_config.DownloadSection") as mock_section:
             mock_section.return_value.output_dir = tmp_path
-            mock_section.return_value.only_first = True
+            mock_section.return_value.strategy = "best"
+            mock_section.return_value.max_per_date = 1
+            mock_section.return_value.max_cloud_cover = None
             mock_section.return_value.download_scl = True
 
             result = run_sentinel_pipeline(
@@ -275,6 +339,76 @@ class TestRunSentinelPipelineDownloadStep:
         assert isinstance(stats, dict)
         assert "total_processed" in stats
 
+    def test_strategy_forwarded_to_run_download(self, tmp_path):
+        catalog_file = tmp_path / "catalog.json"
+        _write_catalog_json(catalog_file)
+
+        captured = {}
+
+        def fake_run_download(catalog_json, output_dir, **kwargs):
+            captured.update(kwargs)
+
+        with patch(
+            "aquamatch.sentinel_data.run_download", side_effect=fake_run_download
+        ):
+            run_sentinel_pipeline(
+                catalog_json=catalog_file,
+                output_dir=tmp_path,
+                mode="download",
+                strategy="same_day",
+            )
+
+        assert captured["strategy"] == "same_day"
+
+    def test_max_per_date_forwarded_to_run_download(self, tmp_path):
+        catalog_file = tmp_path / "catalog.json"
+        _write_catalog_json(catalog_file)
+
+        captured = {}
+
+        def fake_run_download(catalog_json, output_dir, **kwargs):
+            captured.update(kwargs)
+
+        with patch(
+            "aquamatch.sentinel_data.run_download", side_effect=fake_run_download
+        ):
+            run_sentinel_pipeline(
+                catalog_json=catalog_file,
+                output_dir=tmp_path,
+                mode="download",
+                max_per_date=3,
+            )
+
+        assert captured["max_per_date"] == 3
+
+    def test_max_cloud_cover_forwarded_to_run_download(self, tmp_path):
+        catalog_file = tmp_path / "catalog.json"
+        _write_catalog_json(catalog_file)
+
+        captured = {}
+
+        def fake_run_download(catalog_json, output_dir, **kwargs):
+            captured.update(kwargs)
+
+        with patch(
+            "aquamatch.sentinel_data.run_download", side_effect=fake_run_download
+        ):
+            run_sentinel_pipeline(
+                catalog_json=catalog_file,
+                output_dir=tmp_path,
+                mode="download",
+                max_cloud_cover=15,
+            )
+
+        assert captured["max_cloud_cover"] == 15
+
+    def test_only_first_not_a_parameter(self):
+        """run_sentinel_pipeline must not accept only_first."""
+        import inspect
+
+        sig = inspect.signature(run_sentinel_pipeline)
+        assert "only_first" not in sig.parameters
+
     def test_elapsed_seconds_present_on_success(self, tmp_path):
         catalog_file = tmp_path / "catalog.json"
         _write_catalog_json(catalog_file)
@@ -329,7 +463,6 @@ class TestRunSentinelPipelineDownloadStep:
         assert result["status"] == "success"
 
     def test_download_step_does_not_write_catalog(self, tmp_path):
-        """mode='download' must not create or overwrite a catalog JSON."""
         catalog_file = tmp_path / "catalog.json"
         _write_catalog_json(catalog_file)
         original_mtime = catalog_file.stat().st_mtime
@@ -348,54 +481,28 @@ class TestRunSentinelPipelineDownloadStep:
 
 
 class TestRunSentinelPipelineCatalogStep:
-    """Tests for mode='catalog' — build_catalog is called, download is skipped.
+    """Tests for mode='catalog' — download is skipped."""
 
-    build_catalog() makes live SentinelHub + EarthSearch network calls, so
-    catalog.search() and Client.search() are patched here.
-    """
-
-    def _mock_catalog_search(self, acquisition_date="2024-03-15"):
-        """Return a mock SentinelHubCatalog.search result."""
-        item = {
-            "id": _SCENE_ID,
-            "properties": {
-                "datetime": f"{acquisition_date}T13:51:11Z",
-                "eo:cloud_cover": 5.0,
-            },
-            "assets": {
-                "data": {"href": "s3://eodata/dummy/path/" + _SCENE_ID + ".SAFE"}
-            },
-        }
-        return [item]
-
-    def _mock_l2a_item(self):
-        """Return a mock EarthSearch L2A pystac Item."""
-        scl_asset = MagicMock()
-        scl_asset.href = "https://example.com/SCL.tif"
-        item = MagicMock()
-        item.assets = {"scl": scl_asset}
-        return item
+    def _mock_search_images_result(self):
+        return [
+            {
+                "id": _SCENE_ID,
+                "datetime": "2024-03-15T13:51:11Z",
+                "cloud_cover": 5.0,
+                "href": "s3://eodata/dummy/path/" + _SCENE_ID + ".SAFE",
+                "delta_days": 0,
+                "l2a_scl": "https://example.com/SCL.tif",
+            }
+        ]
 
     def test_catalog_json_is_written(self, tmp_path):
         unique_csv = tmp_path / "unique.csv"
         catalog_file = tmp_path / "catalog.json"
         _write_unique_csv(unique_csv)
 
-        mock_search_result = self._mock_catalog_search()
-        mock_l2a_item = self._mock_l2a_item()
-
         with patch(
             "aquamatch.sentinel_data.search_images",
-            return_value=[
-                {
-                    "id": _SCENE_ID,
-                    "datetime": "2024-03-15T13:51:11Z",
-                    "cloud_cover": 5.0,
-                    "href": "s3://eodata/dummy/path/" + _SCENE_ID + ".SAFE",
-                    "delta_days": 0,
-                    "l2a_scl": "https://example.com/SCL.tif",
-                }
-            ],
+            return_value=self._mock_search_images_result(),
         ):
             run_sentinel_pipeline(
                 csv=unique_csv,
@@ -410,21 +517,9 @@ class TestRunSentinelPipelineCatalogStep:
         catalog_file = tmp_path / "catalog.json"
         _write_unique_csv(unique_csv)
 
-        mock_search_result = self._mock_catalog_search()
-        mock_l2a_item = self._mock_l2a_item()
-
         with patch(
             "aquamatch.sentinel_data.search_images",
-            return_value=[
-                {
-                    "id": _SCENE_ID,
-                    "datetime": "2024-03-15T13:51:11Z",
-                    "cloud_cover": 5.0,
-                    "href": "s3://eodata/dummy/path/" + _SCENE_ID + ".SAFE",
-                    "delta_days": 0,
-                    "l2a_scl": "https://example.com/SCL.tif",
-                }
-            ],
+            return_value=self._mock_search_images_result(),
         ):
             run_sentinel_pipeline(
                 csv=unique_csv,
@@ -436,26 +531,38 @@ class TestRunSentinelPipelineCatalogStep:
             data = json.load(f)
         assert isinstance(data, list)
 
+    def test_catalog_uses_bucketed_schema(self, tmp_path):
+        """Catalog output must use the new images_found dict schema."""
+        unique_csv = tmp_path / "unique.csv"
+        catalog_file = tmp_path / "catalog.json"
+        _write_unique_csv(unique_csv)
+
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=self._mock_search_images_result(),
+        ):
+            run_sentinel_pipeline(
+                csv=unique_csv,
+                catalog_json=catalog_file,
+                mode="catalog",
+            )
+
+        with open(catalog_file) as f:
+            data = json.load(f)
+        assert set(data[0]["images_found"].keys()) == {
+            "same_day",
+            "previous",
+            "posterior",
+        }
+
     def test_outputs_contains_catalog_json_path(self, tmp_path):
         unique_csv = tmp_path / "unique.csv"
         catalog_file = tmp_path / "catalog.json"
         _write_unique_csv(unique_csv)
 
-        mock_search_result = self._mock_catalog_search()
-        mock_l2a_item = self._mock_l2a_item()
-
         with patch(
             "aquamatch.sentinel_data.search_images",
-            return_value=[
-                {
-                    "id": _SCENE_ID,
-                    "datetime": "2024-03-15T13:51:11Z",
-                    "cloud_cover": 5.0,
-                    "href": "s3://eodata/dummy/path/" + _SCENE_ID + ".SAFE",
-                    "delta_days": 0,
-                    "l2a_scl": "https://example.com/SCL.tif",
-                }
-            ],
+            return_value=self._mock_search_images_result(),
         ):
             result = run_sentinel_pipeline(
                 csv=unique_csv,
@@ -470,22 +577,10 @@ class TestRunSentinelPipelineCatalogStep:
         catalog_file = tmp_path / "catalog.json"
         _write_unique_csv(unique_csv)
 
-        with (
-            patch(
-                "aquamatch.sentinel_data.search_images",
-                return_value=[
-                    {
-                        "id": _SCENE_ID,
-                        "datetime": "2024-03-15T13:51:11Z",
-                        "cloud_cover": 5.0,
-                        "href": "s3://eodata/dummy/path/" + _SCENE_ID + ".SAFE",
-                        "delta_days": 0,
-                        "l2a_scl": "https://example.com/SCL.tif",
-                    }
-                ],
-            ),
-            patch("aquamatch.sentinel_data.run_download") as mock_run_download,
-        ):
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=self._mock_search_images_result(),
+        ), patch("aquamatch.sentinel_data.run_download") as mock_run_download:
             run_sentinel_pipeline(
                 csv=unique_csv,
                 catalog_json=catalog_file,
@@ -506,7 +601,7 @@ class TestRunSentinelPipelineCatalogStep:
 
 
 class TestRunSentinelPipelineStatusDict:
-    """Status dict contract is consistent across all mode and outcomes."""
+    """Status dict contract is consistent across all modes and outcomes."""
 
     def test_step_field_is_sentinel(self, tmp_path):
         catalog_file = tmp_path / "catalog.json"
@@ -524,41 +619,35 @@ class TestRunSentinelPipelineStatusDict:
 
         assert result["step"] == "sentinel"
 
-    def test_error_result_has_empty_outputs_before_failing_step(self, tmp_path):
-        """Outputs for completed mode are preserved even on error."""
+    def test_error_result_has_empty_or_partial_outputs(self, tmp_path):
         result = run_sentinel_pipeline(
             catalog_json=tmp_path / "nonexistent.json",
             output_dir=tmp_path,
             mode="download",
         )
 
-        # No mode completed, so outputs should be empty or only partial
         assert isinstance(result["outputs"], dict)
 
     def test_partial_outputs_preserved_on_error_after_catalog(self, tmp_path):
         unique_csv = tmp_path / "unique.csv"
         catalog_file = tmp_path / "catalog.json"
-
         _write_unique_csv(unique_csv)
 
-        with (
-            patch(
-                "aquamatch.sentinel_data.search_images",
-                return_value=[
-                    {
-                        "id": _SCENE_ID,
-                        "datetime": "2024-03-15T13:51:11Z",
-                        "cloud_cover": 5.0,
-                        "href": "s3://eodata/dummy/path/" + _SCENE_ID + ".SAFE",
-                        "delta_days": 0,
-                        "l2a_scl": "https://example.com/SCL.tif",
-                    }
-                ],
-            ),
-            patch(
-                "aquamatch.sentinel_data.run_download",
-                side_effect=RuntimeError("S3 unavailable"),
-            ),
+        with patch(
+            "aquamatch.sentinel_data.search_images",
+            return_value=[
+                {
+                    "id": _SCENE_ID,
+                    "datetime": "2024-03-15T13:51:11Z",
+                    "cloud_cover": 5.0,
+                    "href": "s3://eodata/dummy/path/" + _SCENE_ID + ".SAFE",
+                    "delta_days": 0,
+                    "l2a_scl": "https://example.com/SCL.tif",
+                }
+            ],
+        ), patch(
+            "aquamatch.sentinel_data.run_download",
+            side_effect=RuntimeError("S3 unavailable"),
         ):
             result = run_sentinel_pipeline(
                 csv=unique_csv,

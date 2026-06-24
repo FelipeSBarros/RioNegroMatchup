@@ -97,25 +97,26 @@ run_sentinel_pipeline(
 )
 ```
 
-The result is a `sentinel_catalog.json` file listing matched scenes per field date.
+The result is a `sentinel_catalog.json` file listing matched scenes per field date. Scenes are grouped into three temporal buckets relative to the field date — `same_day`, `previous` (acquired before), and `posterior` (acquired after) — each sorted by `delta_days` then `cloud_cover` ascending so the best candidate is always `bucket[0]`:
 
 ```json
 [
   {
     "field_date": "2025-11-05",
-    "images_found": [
-      {
-        "id": "S2B_MSIL1C_20251103T134659_N0511_R024_T21HVD_20251103T170338.SAFE",
-        "datetime": "2025-11-03T14:01:38.729Z",
-        "cloud_cover": 0.0,
-        "href": "s3://eodata/Sentinel-2/MSI/L1C/2025/11/03/S2B_MSIL1C_20251103T134659_N0511_R024_T21HVD_20251103T170338.SAFE/",
-        "delta_days": 2,
-        "l2a_scl": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/21/H/VD/2025/11/S2B_21HVD_20251103_0_L2A/SCL.tif"
-      },
-      {
-        ...
-      }
-    ]
+    "images_found": {
+      "same_day": [],
+      "previous": [
+        {
+          "id": "S2B_MSIL1C_20251103T134659_N0511_R024_T21HVD_20251103T170338.SAFE",
+          "datetime": "2025-11-03T14:01:38.729Z",
+          "cloud_cover": 0.0,
+          "href": "s3://eodata/Sentinel-2/MSI/L1C/2025/11/03/S2B_MSIL1C_20251103T134659_N0511_R024_T21HVD_20251103T170338.SAFE/",
+          "delta_days": 2,
+          "l2a_scl": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/21/H/VD/2025/11/S2B_21HVD_20251103_0_L2A/SCL.tif"
+        }
+      ],
+      "posterior": []
+    }
   }
 ]
 ```
@@ -133,21 +134,50 @@ python aquamatch/sentinel_data.py --mode catalog \
 
 ### Step 3 — Download imagery
 
-Download the SAFE products and SCL assets (the latter if desired, using `--download-scl` flag) listed in the catalogue. Any scenes that have already been downloaded are skipped automatically.
+Download the SAFE products and SCL assets listed in the catalogue. Any scenes that have already been downloaded are skipped automatically.
+
+The `strategy` parameter controls which scenes are downloaded per field date:
+
+| Strategy | Behaviour |
+|----------|-----------|
+| `best` (default) | Prefer `same_day`, fall back to `previous`, then `posterior`. Picks up to `max_per_date` scenes. |
+| `same_day` | Only download scenes acquired on the exact field date. |
+| `previous` | Prefer `same_day`, fall back to `previous` only. Never uses `posterior`. |
+| `posterior` | Prefer `same_day`, fall back to `posterior` only. Never uses `previous`. |
+| `all` | Download every scene found across all buckets. |
 
 ```python
 from aquamatch import run_sentinel_pipeline
 
-run_sentinel_pipeline(download_scl=True, mode="download")
+# Download best matching scene per date (default)
+run_sentinel_pipeline(
+    strategy="best",
+    max_per_date=1,
+    download_scl=True,
+    mode="download",
+)
+
+# Download only same-day scenes, up to 2 per date, cloud cover ≤ 15 %
+run_sentinel_pipeline(
+    strategy="same_day",
+    max_per_date=2,
+    max_cloud_cover=15,
+    download_scl=True,
+    mode="download",
+)
+
+# Download everything found
+run_sentinel_pipeline(strategy="all", mode="download")
 ```
 
-> The SCL asset can be used in Step 4 as a source of spatial waterbody information. 
-> Steps 2 and 3 can also be run together by passing `steps="all"`, or `mode="all"` to the CLI.
+> Steps 2 and 3 can also be run together by passing `mode="all"`.
 
 **CLI equivalent:**
 
 ```bash
 python aquamatch/sentinel_data.py --mode download \
+  --strategy best \
+  --max-per-date 1 \
   --download-scl
 ```
 
@@ -249,6 +279,17 @@ sentinel:
   enabled: true
   time_delta: 2
   cloud_cover: 20
+
+download:
+  enabled: true
+  # Download selection strategy. One of: best | same_day | previous | posterior | all
+  # best: prefer same_day, fall back to previous then posterior (default)
+  strategy: best
+  # Maximum scenes to download per field date (ignored for strategy: all)
+  max_per_date: 1
+  # Optional secondary cloud cover ceiling applied at download time
+  max_cloud_cover: null
+  download_scl: true
 
 acolite:
   enabled: true

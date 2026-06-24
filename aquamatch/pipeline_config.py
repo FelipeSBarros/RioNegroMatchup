@@ -32,6 +32,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Valid values for DownloadSection.strategy — validated at load time.
+VALID_DOWNLOAD_STRATEGIES = {"best", "all", "same_day", "previous", "posterior"}
+
 # ---------------------------------------------------------------------------
 # Section dataclasses
 # ---------------------------------------------------------------------------
@@ -61,7 +64,9 @@ class DownloadSection:
     enabled: bool = True
     output_dir: str = "data/sentinel_downloads"
     catalog_json: str = "data/sentinel_downloads/sentinel_catalog.json"
-    only_first: bool = True
+    strategy: str = "best"
+    max_per_date: int = 1
+    max_cloud_cover: Optional[int] = None
     download_scl: bool = True
 
 
@@ -245,60 +250,18 @@ class TilesSection:
     entries: dict[str, TileEntry] = field(default_factory=dict)
 
     def get(self, tile_id: str) -> Optional[TileEntry]:
-        """
-        Return the ``TileEntry`` for *tile_id*, or ``None`` if not configured.
-
-        Parameters
-        ----------
-        tile_id:
-            5-character MGRS tile code (e.g. ``'21HUD'``).
-
-        Returns
-        -------
-        TileEntry or None
-        """
         return self.entries.get(tile_id)
 
     def validate(self) -> None:
-        """
-        Validate all tile entries.
-
-        Raises
-        ------
-        ValueError
-            If any ``TileEntry`` fails its own validation.
-        """
         for tile_id, entry in self.entries.items():
             entry.validate(tile_id=tile_id)
 
     @classmethod
     def from_dict(cls, raw: dict) -> "TilesSection":
-        """
-        Parse a raw dict (from YAML) into a ``TilesSection``.
-
-        Each key is a tile ID string; each value is a dict with optional
-        ``polygon`` and/or ``limit`` keys.  Unknown keys within a tile
-        entry raise ``ValueError``.
-
-        Parameters
-        ----------
-        raw:
-            Dict mapping tile ID strings to tile entry dicts.
-
-        Returns
-        -------
-        TilesSection
-
-        Raises
-        ------
-        ValueError
-            If any tile entry contains unknown keys or fails validation.
-        """
         entries: dict[str, TileEntry] = {}
         known_tile_keys = {f.name for f in fields(TileEntry)}
 
         for tile_id, tile_raw in raw.items():
-            # Allow empty / null tile entries (no restriction)
             if tile_raw is None:
                 entries[tile_id] = TileEntry()
                 continue
@@ -346,21 +309,6 @@ class PipelineConfig:
     def generate(cls, output_path: Path | str) -> Path:
         """
         Write a fully-commented YAML template to *output_path*.
-
-        The template includes all parameters at their defaults, with inline
-        comments documenting units, valid values, and descriptions.  This is
-        the primary entry point for new users.
-
-        Parameters
-        ----------
-        output_path:
-            Destination YAML file.  The parent directory is created if it
-            does not exist.
-
-        Returns
-        -------
-        Path
-            The path to the written YAML file.
         """
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -420,7 +368,26 @@ download:
   output_dir: data/sentinel_downloads
   catalog_json: data/sentinel_downloads/sentinel_catalog.json
 
-  only_first: true                  # Download only the first scene per date
+  # Download selection strategy. Controls which scenes are downloaded per
+  # field date from the bucketed catalog (same_day / previous / posterior).
+  #
+  # best      — prefer same_day, fall back to previous then posterior.
+  #             Picks up to max_per_date scenes filling quota in that order.
+  # same_day  — only download scenes acquired on the exact field date.
+  # previous  — prefer same_day, fall back to previous acquisitions only.
+  # posterior — prefer same_day, fall back to posterior acquisitions only.
+  # all       — download every scene found across all buckets.
+  strategy: best
+
+  # Maximum number of scenes to download per field date.
+  # Ignored when strategy is "all".
+  max_per_date: 1
+
+  # Optional secondary cloud cover ceiling applied at download time,
+  # independently of the search ceiling (sentinel.cloud_cover).
+  # Set to null to apply no additional filter.
+  max_cloud_cover: null
+
   download_scl: true                # Also download SCL asset (recommended)
 
 # =============================================================================
@@ -572,7 +539,8 @@ tiles: {}
         FileNotFoundError
             If the YAML file does not exist.
         ValueError
-            If the YAML contains unknown keys at any level.
+            If the YAML contains unknown keys at any level, or if
+            ``download.strategy`` is not one of the valid strategy values.
         """
         try:
             import yaml
@@ -627,6 +595,15 @@ tiles: {}
         _check_keys(output_raw, AcoliteOutputSection, context="acolite.output_format")
         _check_keys(scl_raw, SclSection, context="acolite.scl")
 
+        # --- Validate download strategy ---
+        if "strategy" in download_raw:
+            strategy = download_raw["strategy"]
+            if strategy not in VALID_DOWNLOAD_STRATEGIES:
+                raise ValueError(
+                    f"Unknown download strategy '{strategy}' in [download]. "
+                    f"Valid values: {sorted(VALID_DOWNLOAD_STRATEGIES)}"
+                )
+
         # Handle dsf_tile_dimensions: YAML list → tuple
         if "dsf_tile_dimensions" in radcor_raw:
             val = radcor_raw["dsf_tile_dimensions"]
@@ -642,7 +619,6 @@ tiles: {}
             scl=SclSection(**scl_raw),
         )
 
-        # tiles_raw may be None (YAML `tiles:` with no value) or a dict
         tiles = TilesSection.from_dict(tiles_raw or {})
 
         return cls(
@@ -662,15 +638,6 @@ tiles: {}
     def to_acolite_config(self):
         """
         Convert the acolite section to an ``AcoliteConfig`` instance.
-
-        When ``acolite.low_memory`` is true the config is created via a
-        hypothetical ``AcoliteConfig.low_memory()`` classmethod; otherwise
-        the standard constructor is used.  Currently both code paths produce
-        the same object — the hook is here so callers can customise it later.
-
-        Returns
-        -------
-        AcoliteConfig
         """
         from aquamatch.acolite_spec import (
             AcoliteConfig,
@@ -688,7 +655,7 @@ tiles: {}
         limit = tuple(a.io.limit) if a.io.limit is not None else None
 
         io = IOConfig(
-            inputfile="",  # populated per-scene by run_batch
+            inputfile="",
             output=a.io.output,
             limit=limit,
         )
@@ -745,33 +712,11 @@ tiles: {}
         return cfg
 
     def to_tile_config(self) -> TilesSection:
-        """
-        Return the ``TilesSection`` for use in ``run_batch``.
-
-        This is a thin accessor kept for symmetry with the other
-        ``to_*`` converters (``to_acolite_config``, ``to_scl_kwargs``,
-        ``to_insitu_args``, ``to_sentinel_args``).  Callers that need
-        to pass tile spatial restrictions to ``run_batch`` or
-        ``from_campaigns_row`` should use this rather than accessing
-        ``self.tiles`` directly.
-
-        Returns
-        -------
-        TilesSection
-            The tile spatial restrictions defined in this config.
-            Returns an empty ``TilesSection`` when no tiles are configured.
-        """
+        """Return the ``TilesSection`` for use in ``run_batch``."""
         return self.tiles
 
     def to_scl_kwargs(self) -> dict:
-        """
-        Return keyword arguments for SCL water extraction functions.
-
-        Returns
-        -------
-        dict
-            Keys: ``min_area_m2``, ``simplify_tolerance``, ``buffer_m``.
-        """
+        """Return keyword arguments for SCL water extraction functions."""
         s = self.acolite.scl
         return {
             "min_area_m2": s.min_area_m2,
@@ -780,14 +725,7 @@ tiles: {}
         }
 
     def to_insitu_args(self) -> dict:
-        """
-        Return arguments for the in situ data pipeline step.
-
-        Returns
-        -------
-        dict
-            Keys mirror the CLI / function arguments of ``insitu_data``.
-        """
+        """Return arguments for the in situ data pipeline step."""
         s = self.insitu
         return {
             "stations_path": Path(s.stations_path),
@@ -799,14 +737,15 @@ tiles: {}
 
     def to_sentinel_args(self) -> dict:
         """
-        Return arguments for the Sentinel-2 catalog and download mode.
+        Return arguments for the Sentinel-2 catalog and download steps.
 
         Returns
         -------
         dict
             Keys for catalog building (``csv``, ``catalog_json``,
             ``time_delta``, ``cloud_cover``) and download
-            (``output_dir``, ``only_first``, ``download_scl``).
+            (``output_dir``, ``strategy``, ``max_per_date``,
+            ``max_cloud_cover``, ``download_scl``).
         """
         return {
             "csv": Path(self.sentinel.csv),
@@ -814,7 +753,9 @@ tiles: {}
             "time_delta": self.sentinel.time_delta,
             "cloud_cover": self.sentinel.cloud_cover,
             "output_dir": Path(self.download.output_dir),
-            "only_first": self.download.only_first,
+            "strategy": self.download.strategy,
+            "max_per_date": self.download.max_per_date,
+            "max_cloud_cover": self.download.max_cloud_cover,
             "download_scl": self.download.download_scl,
         }
 
@@ -825,25 +766,6 @@ tiles: {}
     def run(self, dry_run: bool = False) -> dict:
         """
         Execute the full pipeline in order, respecting ``enabled`` flags.
-
-        Steps
-        -----
-        1. In situ data preparation (``insitu.enabled``)
-        2. Sentinel-2 catalog building (``sentinel.enabled``)
-        3. Image download (``download.enabled``)
-        4. ACOLITE atmospheric correction (``acolite.enabled``)
-
-        Parameters
-        ----------
-        dry_run:
-            If True, log what would be executed without calling any external
-            tools.  Useful for testing the configuration.
-
-        Returns
-        -------
-        dict
-            Summary with keys ``insitu``, ``sentinel``, ``download``,
-            ``acolite``, each containing a status string and any results.
         """
         summary: dict[str, Any] = {}
         logger.info(
@@ -986,7 +908,9 @@ tiles: {}
         run_download(
             catalog_json=args["catalog_json"],
             output_dir=args["output_dir"],
-            only_first=args["only_first"],
+            strategy=args["strategy"],
+            max_per_date=args["max_per_date"],
+            max_cloud_cover=args["max_cloud_cover"],
             download_scl=args["download_scl"],
         )
         return {"status": "ok"}
@@ -1034,7 +958,6 @@ def _check_keys(raw: dict, dataclass_type, context: str) -> None:
     if not raw:
         return
 
-    # For top-level PipelineConfig we use the hard-coded set
     if dataclass_type is PipelineConfig:
         known = _KNOWN_TOP_LEVEL
     else:
