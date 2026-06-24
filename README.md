@@ -343,3 +343,61 @@ tiles:
 > The tile ID is extracted automatically from the SAFE folder filename (e.g. `T21HUD` in `S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD_...SAFE`), so no manual mapping between files and tiles is needed.
 
 > The same precedence logic applies when using run_batch() programmatically — see Step 4 above.
+
+---
+
+## Utilities
+
+### Temporal opportunity cost analysis
+
+Before committing to a temporal tolerance for your campaign, it is useful to understand how many field dates will have a valid Sentinel-2 acquisition available and what cloud cover to expect at each tolerance level. `analyze_temporal_opportunity` quantifies this directly from the catalog produced by Step 2.
+
+For every tolerance `d` from 0 to `max_delta_days` the function:
+
+1. Determines whether at least one image exists with `delta_days <= d` for each field date.
+2. Computes **availability** (% of field dates with a valid image) and **opportunity cost** (`1 - availability`).
+3. Selects the best image per date (minimum `delta_days`, then minimum `cloud_cover`) and reports mean and median cloud cover of the selected set.
+
+A publication-quality three-panel PNG figure is saved to `output_figure`:
+
+| Panel | Content |
+|-------|---------|
+| Left | Availability (%) vs temporal tolerance (days) |
+| Centre | Opportunity cost (%) vs temporal tolerance (days) |
+| Right | Mean and median cloud cover (%) vs temporal tolerance (days) |
+
+```python
+from aquamatch.utils import analyze_temporal_opportunity
+
+df = analyze_temporal_opportunity(
+    catalog_json="data/sentinel_downloads/sentinel_catalog.json",
+    output_figure="reports/temporal_opportunity.png",
+    max_delta_days=7,
+)
+
+print(df[["delta_days", "availability", "opportunity_cost", "mean_cloud_cover"]])
+```
+
+```
+   delta_days  availability  opportunity_cost  mean_cloud_cover
+0           0          42.9              57.1               3.2
+1           1          71.4              28.6               4.8
+2           2          85.7              14.3               5.1
+3           3          92.9               7.1               6.3
+4           4          92.9               7.1               6.3
+5           5         100.0               0.0               7.0
+6           6         100.0               0.0               7.0
+7           7         100.0               0.0               7.0
+```
+
+The returned DataFrame contains one row per tolerance value with columns `delta_days`, `n_dates`, `n_available`, `availability`, `opportunity_cost`, `mean_cloud_cover`, and `median_cloud_cover`. Pass `return_dataframe=False` if only the figure is needed.
+
+**What to consider when choosing a tolerance**
+The table frames a trade-off between temporal fidelity and spatial coverage:
+
+A strict same-day requirement (d=0) gives the most scientifically defensible matchups but leaves 57% of your field dates unmatched — a significant loss of usable data.
+d=1 or d=2 is usually the pragmatic sweet spot for water quality remote sensing, where surface conditions can change meaningfully over days but same-day coverage is rare.
+If your target variable changes slowly (e.g. long-term turbidity trends in a large reservoir), d=3 or d=5 may be acceptable and recovers nearly all dates.
+If your variable is highly dynamic (e.g. algal bloom events, flood pulses), even d=1 may introduce unacceptable temporal mismatch and you should be cautious about any row beyond d=0.
+
+The cloud cover column is a sanity check — if mean cloud cover were climbing sharply with tolerance (say, above 20–30%), it would signal that the additional scenes being recovered are systematically cloudy and may not produce usable retrievals even after atmospheric correction.
