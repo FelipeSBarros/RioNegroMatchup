@@ -149,7 +149,6 @@ class TestGenerateSkipExisting:
         out = tmp_path / "template.yaml"
         PipelineConfig.generate(out)
         content = out.read_text()
-        # The line should read `skip_existing: true`
         assert "skip_existing: true" in content
 
     def test_template_round_trips_skip_existing(self, tmp_path):
