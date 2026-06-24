@@ -1194,3 +1194,436 @@ class TestRunDownload:
                 download_scl=True,
             )
             mock_dl.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_download — remaining strategies (same_day, previous, posterior)
+# ---------------------------------------------------------------------------
+
+
+class TestRunDownloadStrategies:
+    """
+    Integration tests for run_download with every strategy value,
+    verifying that _select_scenes is wired correctly end-to-end.
+
+    We capture downloaded scene IDs by patching get_download_status, which
+    receives product_id as its first argument — cleaner than trying to
+    reverse-engineer the S3 product_path from the href.
+    """
+
+    def _make_catalog(self, tmp_path, *, same_day_ids, previous_ids, posterior_ids):
+        def _img(id_):
+            return {
+                "id": id_,
+                "href": f"https://eodata.dataspace.copernicus.eu/eodata/{id_}/path",
+                "l2a_scl": None,
+                "delta_days": 0,
+                "cloud_cover": 5,
+                "datetime": "2024-03-15T13:51:11Z",
+            }
+
+        catalog_data = [
+            {
+                "field_date": "2024-03-15",
+                "images_found": {
+                    "same_day": [_img(i) for i in same_day_ids],
+                    "previous": [_img(i) for i in previous_ids],
+                    "posterior": [_img(i) for i in posterior_ids],
+                },
+            }
+        ]
+        path = tmp_path / "catalog.json"
+        import json
+
+        path.write_text(json.dumps(catalog_data))
+        return path
+
+    def _capture_downloads(self):
+        """
+        Return (downloaded_ids list, status_side_effect).
+        Captures product_id from get_download_status's first argument, which
+        is called before download_product — no S3 path parsing needed.
+        """
+        downloaded = []
+
+        def fake_status(product_id, output_dir, download_scl):
+            downloaded.append(product_id)
+            return {"safe_exists": False, "scl_exists": False, "all_downloaded": False}
+
+        return downloaded, fake_status
+
+    # --- same_day ---
+
+    def test_same_day_downloads_only_same_day_scene(self, tmp_path):
+        catalog = self._make_catalog(
+            tmp_path, same_day_ids=["SD"], previous_ids=["PV"], posterior_ids=["PT"]
+        )
+        downloaded, fake_status = self._capture_downloads()
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.get_download_status", side_effect=fake_status
+        ):
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="same_day",
+                max_per_date=1,
+                download_scl=False,
+            )
+        assert downloaded == ["SD"]
+
+    def test_same_day_skips_date_when_no_same_day_scenes(self, tmp_path):
+        catalog = self._make_catalog(
+            tmp_path, same_day_ids=[], previous_ids=["PV"], posterior_ids=["PT"]
+        )
+        with patch("aquamatch.sentinel_data.download_product") as mock_dl, patch(
+            "aquamatch.sentinel_data.get_download_status",
+            return_value={
+                "safe_exists": False,
+                "scl_exists": False,
+                "all_downloaded": False,
+            },
+        ):
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="same_day",
+                max_per_date=1,
+                download_scl=False,
+            )
+        mock_dl.assert_not_called()
+
+    # --- previous ---
+
+    def test_previous_downloads_same_day_when_available(self, tmp_path):
+        catalog = self._make_catalog(
+            tmp_path, same_day_ids=["SD"], previous_ids=["PV"], posterior_ids=["PT"]
+        )
+        downloaded, fake_status = self._capture_downloads()
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.get_download_status", side_effect=fake_status
+        ):
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="previous",
+                max_per_date=1,
+                download_scl=False,
+            )
+        assert downloaded == ["SD"]
+
+    def test_previous_falls_back_to_previous_when_no_same_day(self, tmp_path):
+        catalog = self._make_catalog(
+            tmp_path, same_day_ids=[], previous_ids=["PV"], posterior_ids=["PT"]
+        )
+        downloaded, fake_status = self._capture_downloads()
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.get_download_status", side_effect=fake_status
+        ):
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="previous",
+                max_per_date=1,
+                download_scl=False,
+            )
+        assert downloaded == ["PV"]
+
+    def test_previous_never_downloads_posterior(self, tmp_path):
+        catalog = self._make_catalog(
+            tmp_path, same_day_ids=[], previous_ids=[], posterior_ids=["PT"]
+        )
+        with patch("aquamatch.sentinel_data.download_product") as mock_dl, patch(
+            "aquamatch.sentinel_data.get_download_status",
+            return_value={
+                "safe_exists": False,
+                "scl_exists": False,
+                "all_downloaded": False,
+            },
+        ):
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="previous",
+                max_per_date=1,
+                download_scl=False,
+            )
+        mock_dl.assert_not_called()
+
+    # --- posterior ---
+
+    def test_posterior_downloads_same_day_when_available(self, tmp_path):
+        catalog = self._make_catalog(
+            tmp_path, same_day_ids=["SD"], previous_ids=["PV"], posterior_ids=["PT"]
+        )
+        downloaded, fake_status = self._capture_downloads()
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.get_download_status", side_effect=fake_status
+        ):
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="posterior",
+                max_per_date=1,
+                download_scl=False,
+            )
+        assert downloaded == ["SD"]
+
+    def test_posterior_falls_back_to_posterior_when_no_same_day(self, tmp_path):
+        catalog = self._make_catalog(
+            tmp_path, same_day_ids=[], previous_ids=["PV"], posterior_ids=["PT"]
+        )
+        downloaded, fake_status = self._capture_downloads()
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.get_download_status", side_effect=fake_status
+        ):
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="posterior",
+                max_per_date=1,
+                download_scl=False,
+            )
+        assert downloaded == ["PT"]
+
+    def test_posterior_never_downloads_previous(self, tmp_path):
+        catalog = self._make_catalog(
+            tmp_path, same_day_ids=[], previous_ids=["PV"], posterior_ids=[]
+        )
+        with patch("aquamatch.sentinel_data.download_product") as mock_dl, patch(
+            "aquamatch.sentinel_data.get_download_status",
+            return_value={
+                "safe_exists": False,
+                "scl_exists": False,
+                "all_downloaded": False,
+            },
+        ):
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="posterior",
+                max_per_date=1,
+                download_scl=False,
+            )
+        mock_dl.assert_not_called()
+
+    # --- max_cloud_cover in run_download ---
+
+    def test_max_cloud_cover_filters_before_download(self, tmp_path):
+        """High-cloud same_day scene must be skipped; low-cloud previous must be used."""
+        import json
+
+        catalog_data = [
+            {
+                "field_date": "2024-03-15",
+                "images_found": {
+                    "same_day": [
+                        {
+                            "id": "SD_HIGH",
+                            "href": "https://eodata.dataspace.copernicus.eu/eodata/SD_HIGH/path",
+                            "l2a_scl": None,
+                            "delta_days": 0,
+                            "cloud_cover": 25,
+                            "datetime": "2024-03-15T13:51:11Z",
+                        }
+                    ],
+                    "previous": [
+                        {
+                            "id": "PV_LOW",
+                            "href": "https://eodata.dataspace.copernicus.eu/eodata/PV_LOW/path",
+                            "l2a_scl": None,
+                            "delta_days": 1,
+                            "cloud_cover": 5,
+                            "datetime": "2024-03-14T13:51:11Z",
+                        }
+                    ],
+                    "posterior": [],
+                },
+            }
+        ]
+        catalog = tmp_path / "catalog.json"
+        catalog.write_text(json.dumps(catalog_data))
+
+        downloaded, fake_status = self._capture_downloads()
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.get_download_status", side_effect=fake_status
+        ):
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="best",
+                max_per_date=1,
+                max_cloud_cover=10,
+                download_scl=False,
+            )
+        assert downloaded == ["PV_LOW"]
+
+
+# ---------------------------------------------------------------------------
+# Round-trip: build_catalog → run_download with each strategy
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCatalogRunDownloadRoundTrip:
+    """
+    Round-trip tests that wire build_catalog output directly into run_download,
+    verifying the full bucketed schema is consumed correctly for each strategy.
+    """
+
+    def _fake_search_images(self, field_date, dates_and_clouds):
+        """
+        Return a list of fake images as search_images would produce them.
+        dates_and_clouds: list of (acquisition_date, cloud_cover) tuples.
+        """
+        from datetime import datetime
+
+        results = []
+        field_dt = datetime.fromisoformat(field_date)
+        for acq_date, cloud in dates_and_clouds:
+            acq_dt = datetime.fromisoformat(acq_date)
+            delta = abs((acq_dt - field_dt).days)
+            results.append(
+                {
+                    "id": f"SCENE_{acq_date.replace('-','')}",
+                    "datetime": f"{acq_date}T10:00:00.000Z",
+                    "cloud_cover": cloud,
+                    "href": f"https://eodata.dataspace.copernicus.eu/eodata/SCENE_{acq_date.replace('-','')}/path",
+                    "delta_days": delta,
+                    "l2a_scl": None,
+                }
+            )
+        return results
+
+    def _write_csv(self, tmp_path, field_date="2024-03-15"):
+        import pandas as pd
+
+        csv = tmp_path / "unique.csv"
+        pd.DataFrame(
+            {
+                "date": [field_date],
+                "longitud": [-56.5],
+                "latitud": [-32.85],
+            }
+        ).to_csv(csv, index=False)
+        return csv
+
+    def _run_round_trip(
+        self, tmp_path, field_date, scene_dates_clouds, strategy, max_per_date=1
+    ):
+        """Build catalog then run download, return list of downloaded scene IDs."""
+        import json
+
+        csv = self._write_csv(tmp_path, field_date)
+        catalog_json = tmp_path / "catalog.json"
+
+        fake_images = self._fake_search_images(field_date, scene_dates_clouds)
+
+        with patch("aquamatch.sentinel_data.search_images", return_value=fake_images):
+            build_catalog(csv, catalog_json)
+
+        # Verify catalog schema
+        data = json.loads(catalog_json.read_text())
+        assert set(data[0]["images_found"].keys()) == {
+            "same_day",
+            "previous",
+            "posterior",
+        }
+
+        # Capture product_id from get_download_status (first arg), which is
+        # called once per scene before download_product — no href parsing needed.
+        downloaded = []
+
+        def fake_status(product_id, output_dir, download_scl):
+            downloaded.append(product_id)
+            return {"safe_exists": False, "scl_exists": False, "all_downloaded": False}
+
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.get_download_status", side_effect=fake_status
+        ):
+            run_download(
+                catalog_json,
+                tmp_path,
+                strategy=strategy,
+                max_per_date=max_per_date,
+                download_scl=False,
+            )
+        return downloaded
+
+    def test_round_trip_best_prefers_same_day(self, tmp_path):
+        downloaded = self._run_round_trip(
+            tmp_path,
+            "2024-03-15",
+            [("2024-03-15", 5), ("2024-03-14", 3), ("2024-03-16", 3)],
+            strategy="best",
+            max_per_date=1,
+        )
+        assert downloaded == ["SCENE_20240315"]
+
+    def test_round_trip_best_falls_back_to_previous(self, tmp_path):
+        downloaded = self._run_round_trip(
+            tmp_path,
+            "2024-03-15",
+            [("2024-03-14", 3), ("2024-03-16", 3)],  # no same_day
+            strategy="best",
+            max_per_date=1,
+        )
+        assert downloaded == ["SCENE_20240314"]
+
+    def test_round_trip_same_day_only(self, tmp_path):
+        downloaded = self._run_round_trip(
+            tmp_path,
+            "2024-03-15",
+            [("2024-03-15", 5), ("2024-03-14", 3)],
+            strategy="same_day",
+            max_per_date=1,
+        )
+        assert downloaded == ["SCENE_20240315"]
+
+    def test_round_trip_same_day_skips_when_none_available(self, tmp_path):
+        downloaded = self._run_round_trip(
+            tmp_path,
+            "2024-03-15",
+            [("2024-03-14", 3), ("2024-03-16", 3)],  # no same_day
+            strategy="same_day",
+            max_per_date=1,
+        )
+        assert downloaded == []
+
+    def test_round_trip_previous_never_uses_posterior(self, tmp_path):
+        downloaded = self._run_round_trip(
+            tmp_path,
+            "2024-03-15",
+            [("2024-03-16", 3)],  # only posterior
+            strategy="previous",
+            max_per_date=1,
+        )
+        assert downloaded == []
+
+    def test_round_trip_posterior_never_uses_previous(self, tmp_path):
+        downloaded = self._run_round_trip(
+            tmp_path,
+            "2024-03-15",
+            [("2024-03-14", 3)],  # only previous
+            strategy="posterior",
+            max_per_date=1,
+        )
+        assert downloaded == []
+
+    def test_round_trip_all_downloads_everything(self, tmp_path):
+        downloaded = self._run_round_trip(
+            tmp_path,
+            "2024-03-15",
+            [("2024-03-15", 5), ("2024-03-14", 3), ("2024-03-16", 3)],
+            strategy="all",
+        )
+        assert len(downloaded) == 3
+
+    def test_round_trip_sorted_order_respected(self, tmp_path):
+        """Within a bucket, closest + lowest cloud is downloaded first."""
+        downloaded = self._run_round_trip(
+            tmp_path,
+            "2024-03-15",
+            [("2024-03-14", 10), ("2024-03-13", 3)],  # two previous; closer wins
+            strategy="best",
+            max_per_date=1,
+        )
+        assert downloaded == ["SCENE_20240314"]  # delta=1 beats delta=2
