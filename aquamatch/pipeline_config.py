@@ -1170,7 +1170,7 @@ def main(argv=None) -> None:
     args = parser.parse_args(argv)
 
     if args.generate:
-        out = PipelineConfig.g-enerate(args.generate)
+        out = PipelineConfig.generate(args.generate)
         print(f"Template written to: {out}")
 
     elif args.run:
