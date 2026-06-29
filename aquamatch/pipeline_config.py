@@ -129,6 +129,12 @@ class AcoliteL2WSection:
     l2w_mask_water_expr: Optional[str] = "rhos_1600 < 0.0215"
     output_rhorc: bool = False
     output_rhos: bool = True
+    # Extended masking detail (new)
+    l2w_mask_wave: int = 1600
+    l2w_mask_threshold: float = 0.0215
+    l2w_mask_cirrus_threshold: float = 0.005
+    l2w_mask_smooth: bool = True
+    l2w_mask_smooth_sigma: int = 3
 
 
 @dataclass
@@ -140,6 +146,123 @@ class AcoliteOutputSection:
     netcdf_compression_level: int = 4
     map_rgb: bool = False
     map_rgb_maxrange: float = 0.15
+    # Extended output content (new)
+    output_xy: bool = False
+    output_geometry: bool = True
+    l2w_export_geotiff: bool = False
+    copy_datasets: str = "lon,lat,rhot_*"
+
+
+# ---------------------------------------------------------------------------
+# New pipeline config sections (Step B)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AcoliteS2Section:
+    """
+    Sentinel-2 specific processing options.
+
+    Controls target resolution, tile merging, per-pixel geometry, and
+    blackfill handling.  All defaults match ACOLITE's own defaults for S2.
+    """
+
+    s2_target_res: int = 10
+    """Target output resolution in metres.  One of 10, 20, or 60."""
+
+    merge_tiles: bool = False
+    """Merge adjacent SAFE tiles before processing."""
+
+    merge_full_tiles: bool = False
+    """Merge full (non-cropped) tiles."""
+
+    extend_region: bool = False
+    """Extend the cropped region to cover the full tile extent."""
+
+    geometry_type: str = "grids_footprint"
+    """Per-pixel geometry computation method."""
+
+    geometry_res: int = 60
+    """Resolution (m) at which geometry grids are computed."""
+
+    blackfill_skip: bool = True
+    """Skip scenes where the blackfill fraction exceeds ``blackfill_max``."""
+
+    blackfill_max: float = 1.0
+    """Maximum allowed blackfill fraction (0–1)."""
+
+    blackfill_wave: int = 1600
+    """Band (nm) used to detect blackfill pixels."""
+
+
+@dataclass
+class AcoliteDsfSection:
+    """
+    Dark Spectrum Fitting (DSF) fine-tuning.
+
+    Most users should leave these at their defaults.  Adjust when
+    processing very turbid water, small lakes, or scenes with bright
+    non-water targets that confuse the standard dark-pixel retrieval.
+    """
+
+    dsf_aot_estimate: str = "tiled"
+    """AOT estimation mode.  One of ``tiled``, ``fixed``, ``fixed_band``."""
+
+    dsf_spectrum_option: str = "intercept"
+    """Dark-spectrum selection.  One of ``intercept``, ``darkest``, ``percentile``."""
+
+    dsf_nbands: int = 2
+    """Number of bands used for AOT retrieval."""
+
+    dsf_nbands_fit: int = 2
+    """Number of bands used for the spectral fit."""
+
+    dsf_filter_rhot: bool = False
+    """Apply a percentile filter to TOA reflectance before DSF."""
+
+    dsf_filter_percentile: int = 50
+    """Percentile used when ``dsf_filter_rhot=True``."""
+
+    dsf_smooth_aot: bool = False
+    """Spatially smooth the retrieved AOT field."""
+
+    dsf_fixed_aot: Optional[float] = None
+    """Override AOT retrieval with a fixed value.  ``None`` = retrieve."""
+
+    dsf_aot_most_common_model: bool = True
+    """Use the most-common atmospheric model across tiles."""
+
+    dsf_allow_lut_boundaries: bool = False
+    """Allow AOT to reach the edges of the LUT."""
+
+    dsf_min_tile_aot: float = 0.01
+    """Minimum acceptable tile AOT."""
+
+    dsf_max_tile_aot: float = 1.20
+    """Maximum acceptable tile AOT."""
+
+
+@dataclass
+class AcoliteReprojectSection:
+    """
+    Optional output reprojection.
+
+    Disabled by default.  Enable to reproject all ACOLITE outputs to a
+    common projected CRS — useful for direct comparison with in situ
+    station coordinates and for consistent spatial analysis.
+    """
+
+    reproject_outputs: bool = False
+    """Set ``True`` to enable reprojection of all output files."""
+
+    output_projection_epsg: Optional[int] = None
+    """Target EPSG code (e.g. 32721 for UTM zone 21S)."""
+
+    output_projection_resolution: Optional[float] = None
+    """Target pixel size in metres.  ``None`` = native sensor resolution."""
+
+    output_projection_resampling_method: str = "bilinear"
+    """Resampling algorithm.  One of ``nearest``, ``bilinear``, ``cubic``."""
 
 
 @dataclass
@@ -155,6 +278,10 @@ class AcoliteSection:
     l2w: AcoliteL2WSection = field(default_factory=AcoliteL2WSection)
     output_format: AcoliteOutputSection = field(default_factory=AcoliteOutputSection)
     scl: SclSection = field(default_factory=SclSection)
+    # New sub-sections
+    s2: AcoliteS2Section = field(default_factory=AcoliteS2Section)
+    dsf: AcoliteDsfSection = field(default_factory=AcoliteDsfSection)
+    reproject: AcoliteReprojectSection = field(default_factory=AcoliteReprojectSection)
 
 
 # ---------------------------------------------------------------------------
@@ -167,34 +294,13 @@ class TileEntry:
     """
     Spatial restriction for a single Sentinel-2 MGRS tile.
 
-    Exactly one of ``polygon`` or ``limit`` may be set.  If neither is
-    set the tile is processed without any spatial restriction (full scene).
-    Setting both is a configuration error and raises ``ValueError`` on
-    ``validate()``.
-
-    Attributes
-    ----------
-    polygon:
-        Path to a GeoJSON or WKT file defining the tile's region of
-        interest.  Takes precedence over ``limit`` at runtime.
-    limit:
-        Bounding box as ``[south, west, north, east]`` in decimal
-        degrees.  Used when ``polygon`` is not set.
+    Exactly one of ``polygon`` or ``limit`` may be set.
     """
 
     polygon: Optional[str] = None
     limit: Optional[list[float]] = None
 
     def validate(self, tile_id: str = "") -> None:
-        """
-        Validate the tile entry.
-
-        Raises
-        ------
-        ValueError
-            If both ``polygon`` and ``limit`` are set, or if ``limit``
-            does not contain exactly four values.
-        """
         context = f" (tile {tile_id!r})" if tile_id else ""
 
         if self.polygon is not None and self.limit is not None:
@@ -229,23 +335,7 @@ class TileEntry:
 
 @dataclass
 class TilesSection:
-    """
-    Per-tile spatial restrictions, keyed by 5-character MGRS tile code.
-
-    Each entry is a ``TileEntry`` that optionally defines a ``polygon``
-    or ``limit`` for that tile.  Tiles not listed here are processed
-    without any spatial restriction.
-
-    Example YAML::
-
-        tiles:
-          21HUD:
-            polygon: data/polygons/21HUD.geojson
-          21HVD:
-            limit: [-34.2, -56.8, -33.0, -55.1]
-          21HWD:
-            # no restriction — full scene
-    """
+    """Per-tile spatial restrictions, keyed by 5-character MGRS tile code."""
 
     entries: dict[str, TileEntry] = field(default_factory=dict)
 
@@ -307,9 +397,7 @@ class PipelineConfig:
 
     @classmethod
     def generate(cls, output_path: Path | str) -> Path:
-        """
-        Write a fully-commented YAML template to *output_path*.
-        """
+        """Write a fully-commented YAML template to *output_path*."""
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -334,17 +422,14 @@ description: "Sentinel-2 / in situ water quality matchup"
 # Step 1 — In situ data preparation
 # =============================================================================
 insitu:
-  enabled: true                     # Set false to skip this step
+  enabled: true
 
-  # Input files
   stations_path: data/original_data/estaciones-seleccionadas.xlsx
   campaigns_path: data/original_data/campaigns_sample.xlsx
 
-  # Output files
   output_campaigns_csv: data/monitoring_data/campaigns_organized.csv
   output_unique_csv: data/monitoring_data/campaigns_unique_data.csv
 
-  # If true, skip clean_campaigns() — use when OAN already cleaned the export
   skip_clean: false
 
 # =============================================================================
@@ -356,8 +441,8 @@ sentinel:
   catalog_json: data/sentinel_downloads/sentinel_catalog.json
   csv: data/monitoring_data/campaigns_unique_data.csv
 
-  time_delta: 1                # ±N days around each field date (int ≥ 0)
-  cloud_cover: 10               # Maximum cloud cover percentage (0–100)
+  time_delta: 1
+  cloud_cover: 10
 
 # =============================================================================
 # Step 3 — Sentinel-2 image download
@@ -368,27 +453,11 @@ download:
   output_dir: data/sentinel_downloads
   catalog_json: data/sentinel_downloads/sentinel_catalog.json
 
-  # Download selection strategy. Controls which scenes are downloaded per
-  # field date from the bucketed catalog (same_day / previous / posterior).
-  #
-  # best      — prefer same_day, fall back to previous then posterior.
-  #             Picks up to max_per_date scenes filling quota in that order.
-  # same_day  — only download scenes acquired on the exact field date.
-  # previous  — prefer same_day, fall back to previous acquisitions only.
-  # posterior — prefer same_day, fall back to posterior acquisitions only.
-  # all       — download every scene found across all buckets.
+  # best | same_day | previous | posterior | all
   strategy: best
-
-  # Maximum number of scenes to download per field date.
-  # Ignored when strategy is "all".
   max_per_date: 1
-
-  # Optional secondary cloud cover ceiling applied at download time,
-  # independently of the search ceiling (sentinel.cloud_cover).
-  # Set to null to apply no additional filter.
   max_cloud_cover: null
-
-  download_scl: true                # Also download SCL asset (recommended)
+  download_scl: true
 
 # =============================================================================
 # Step 4 — Atmospheric correction (ACOLITE)
@@ -396,59 +465,39 @@ download:
 acolite:
   enabled: true
 
-  # Path to the ACOLITE executable (acolite.py or the compiled binary)
   acolite_executable: /path/to/acolite/acolite.py
 
-  # low_memory: true reduces RAM usage at the cost of processing speed.
-  # Recommended when processing large tiles on machines with < 16 GB RAM.
   low_memory: false
-
-  continue_on_error: true           # Keep processing remaining scenes on failure
-  skip_existing: true               # Skip scenes whose output files already exist;
+  continue_on_error: true
+  skip_existing: true
 
   # --- Input / Output ---
   io:
-    output: data/acolite_output     # Root output directory for ACOLITE products
-    safe_dir: data/sentinel_downloads   # Directory containing .SAFE folders
-    scl_dir: data/sentinel_downloads/scl  # Directory containing SCL GeoTIFFs
+    output: data/acolite_output
+    safe_dir: data/sentinel_downloads
+    scl_dir: data/sentinel_downloads/scl
 
   # --- Radiometric correction ---
   radcor:
-    # Atmospheric correction processor: dsf | exp | tact
-    aerosol_correction: dsf
-
-    # DSF path reflectance method: tiled | fixed | percentile
-    dsf_path_reflectance: tiled
-
-    # DSF tile dimensions [rows, cols] in pixels
+    aerosol_correction: dsf         # dsf | exp | tact
+    dsf_path_reflectance: tiled     # tiled | fixed | percentile
     dsf_tile_dimensions: [120, 120]
-
-    # Minimum fraction of valid pixels required per DSF tile (0.0–1.0)
     dsf_minimum_tile_cover: 0.10
-
-    # Use ECMWF ancillary data for atmospheric parameters (recommended)
     ancillary_data: true
-
-    # Fallback values used when ancillary_data is false
-    uoz: 0.3                        # Ozone column (cm-atm)
-    uwv: 1.5                        # Water vapour column (g/cm²)
-    pressure: 1013.25               # Sea-level pressure (hPa)
+    uoz: 0.3
+    uwv: 1.5
+    pressure: 1013.25
 
   # --- Sunglint correction ---
   glint:
     glint_correction: true
-
-    # Glint correction method: none | hedley | vanhellemont2019
-    glint_method: vanhellemont2019
-
-    glint_threshold: 0.01           # Minimum glint reflectance to correct
-    glint_mask_rhos: true           # Mask pixels above threshold
-    glint_mask_rhos_threshold: 0.15 # Masking threshold (dimensionless)
+    glint_method: vanhellemont2019  # none | hedley | vanhellemont2019
+    glint_threshold: 0.01
+    glint_mask_rhos: true
+    glint_mask_rhos_threshold: 0.15
 
   # --- L2W water quality products ---
   l2w:
-    # Parameters to compute. Available: t_nechad, spm_nechad, chl_oc3,
-    # chl_re, aphy_443, fai, ndwi, ndvi, and others supported by ACOLITE.
     l2w_parameters:
       - t_nechad
       - spm_nechad
@@ -463,13 +512,17 @@ acolite:
     l2w_mask_negative_rhos: true
     l2w_mask_cirrus: true
     l2w_mask_high_toa: true
-    l2w_mask_high_toa_threshold: 0.3  # TOA reflectance threshold
-
-    # Water expression for masking land. Set null to disable.
+    l2w_mask_high_toa_threshold: 0.3
     l2w_mask_water_expr: "rhos_1600 < 0.0215"
+    output_rhorc: false
+    output_rhos: true
 
-    output_rhorc: false             # Output Rayleigh-corrected reflectance
-    output_rhos: true               # Output surface reflectance
+    # Extended masking — adjust to tune mask sensitivity
+    l2w_mask_wave: 1600              # Band (nm) used as the water mask reference
+    l2w_mask_threshold: 0.0215       # Reflectance threshold for the water mask
+    l2w_mask_cirrus_threshold: 0.005 # Cirrus detection threshold
+    l2w_mask_smooth: true            # Smooth mask to reduce speckle
+    l2w_mask_smooth_sigma: 3         # Gaussian sigma for mask smoothing (pixels)
 
   # --- Output formats ---
   output_format:
@@ -477,16 +530,79 @@ acolite:
     export_geotiff_coordinates: true
     export_cloud_optimized_geotiff: false
     netcdf_compression: true
-    netcdf_compression_level: 4    # 1 (fast) – 9 (small); recommended: 4–6
+    netcdf_compression_level: 4     # 1 (fast) – 9 (small)
     map_rgb: false
-    map_rgb_maxrange: 0.15         # RGB stretch maximum (dimensionless)
+    map_rgb_maxrange: 0.15
+
+    # Extended output content
+    output_xy: false                 # Include x/y pixel coordinate arrays
+    output_geometry: true            # Include sun/view geometry bands
+    l2w_export_geotiff: false        # Also export L2W products as GeoTIFF
+    copy_datasets: "lon,lat,rhot_*"  # Datasets copied from L1R to L2R
 
   # --- SCL-based water polygon clipping ---
   scl:
-    use_scl: true                   # Extract water mask from SCL and clip
-    min_area_m2: 5000.0             # Minimum water polygon area (m²)
-    simplify_tolerance: 20.0        # Douglas-Peucker tolerance (m, ~1 pixel)
-    buffer_m: 0.0                   # Outward buffer around water mask (m)
+    use_scl: true
+    min_area_m2: 5000.0
+    simplify_tolerance: 20.0
+    buffer_m: 0.0
+
+  # ---------------------------------------------------------------------------
+  # Sentinel-2 specific options
+  # ---------------------------------------------------------------------------
+  s2:
+    # Target output resolution in metres. One of: 10, 20, 60.
+    # Use 20 on low-memory machines to halve data volume.
+    s2_target_res: 10
+
+    # Merge adjacent SAFE tiles before processing.
+    # Useful for water bodies that span a tile boundary.
+    merge_tiles: false
+    merge_full_tiles: false
+
+    # Extend the ROI to cover the full tile (not just the cropped limit).
+    extend_region: false
+
+    # Per-pixel geometry grids
+    geometry_type: grids_footprint
+    geometry_res: 60                 # Resolution (m) for geometry computation
+
+    # Blackfill handling — skip scenes that are mostly empty (no data).
+    blackfill_skip: true
+    blackfill_max: 1.0               # Max blackfill fraction (0–1); 1.0 = never skip
+    blackfill_wave: 1600             # Band (nm) used to detect blackfill pixels
+
+  # ---------------------------------------------------------------------------
+  # DSF fine-tuning (advanced)
+  # ---------------------------------------------------------------------------
+  # Most users should leave these at their defaults.
+  # Adjust for very turbid water, small lakes, or scenes with bright
+  # non-water targets that confuse the standard dark-pixel retrieval.
+  dsf:
+    dsf_aot_estimate: tiled          # tiled | fixed | fixed_band
+    dsf_spectrum_option: intercept   # intercept | darkest | percentile
+    dsf_nbands: 2                    # Number of bands for AOT retrieval
+    dsf_nbands_fit: 2                # Number of bands for spectral fit
+    dsf_filter_rhot: false           # Apply percentile filter to TOA before DSF
+    dsf_filter_percentile: 50        # Percentile used when dsf_filter_rhot=true
+    dsf_smooth_aot: false            # Spatially smooth the retrieved AOT field
+    dsf_fixed_aot: null              # Set a float (e.g. 0.1) to bypass AOT retrieval
+    dsf_aot_most_common_model: true
+    dsf_allow_lut_boundaries: false
+    dsf_min_tile_aot: 0.01
+    dsf_max_tile_aot: 1.20
+
+  # ---------------------------------------------------------------------------
+  # Output reprojection (optional)
+  # ---------------------------------------------------------------------------
+  # Disabled by default. Enable to reproject all outputs (L1R, L2R, L2W)
+  # to a common projected CRS, useful for direct comparison with in situ
+  # station coordinates and for consistent downstream spatial analysis.
+  reproject:
+    reproject_outputs: false
+    output_projection_epsg: null     # e.g. 32721 for UTM zone 21S (Uruguay/NE Argentina)
+    output_projection_resolution: null  # Target pixel size in metres (null = native)
+    output_projection_resampling_method: bilinear  # nearest | bilinear | cubic
 
 # =============================================================================
 # Tile spatial restrictions
@@ -524,23 +640,6 @@ tiles: {}
 
         Unknown top-level or section keys raise ``ValueError``.
         Missing keys fall back to dataclass defaults.
-
-        Parameters
-        ----------
-        path:
-            Path to the YAML configuration file.
-
-        Returns
-        -------
-        PipelineConfig
-
-        Raises
-        ------
-        FileNotFoundError
-            If the YAML file does not exist.
-        ValueError
-            If the YAML contains unknown keys at any level, or if
-            ``download.strategy`` is not one of the valid strategy values.
         """
         try:
             import yaml
@@ -574,10 +673,20 @@ tiles: {}
         _check_keys(sentinel_raw, SentinelSection, context="sentinel")
         _check_keys(download_raw, DownloadSection, context="download")
 
+        # Separate top-level acolite keys from sub-section keys
+        _ACOLITE_SUBSECTIONS = {
+            "io",
+            "radcor",
+            "glint",
+            "l2w",
+            "output_format",
+            "scl",
+            "s2",
+            "dsf",
+            "reproject",
+        }
         acolite_sub = {
-            k: v
-            for k, v in acolite_raw.items()
-            if k not in ("io", "radcor", "glint", "l2w", "output_format", "scl")
+            k: v for k, v in acolite_raw.items() if k not in _ACOLITE_SUBSECTIONS
         }
         _check_keys(acolite_sub, AcoliteSection, context="acolite")
 
@@ -587,6 +696,9 @@ tiles: {}
         l2w_raw = acolite_raw.get("l2w", {})
         output_raw = acolite_raw.get("output_format", {})
         scl_raw = acolite_raw.get("scl", {})
+        s2_raw = acolite_raw.get("s2", {})
+        dsf_raw = acolite_raw.get("dsf", {})
+        reproject_raw = acolite_raw.get("reproject", {})
 
         _check_keys(io_raw, AcoliteIOSection, context="acolite.io")
         _check_keys(radcor_raw, AcoliteRadCorSection, context="acolite.radcor")
@@ -594,6 +706,9 @@ tiles: {}
         _check_keys(l2w_raw, AcoliteL2WSection, context="acolite.l2w")
         _check_keys(output_raw, AcoliteOutputSection, context="acolite.output_format")
         _check_keys(scl_raw, SclSection, context="acolite.scl")
+        _check_keys(s2_raw, AcoliteS2Section, context="acolite.s2")
+        _check_keys(dsf_raw, AcoliteDsfSection, context="acolite.dsf")
+        _check_keys(reproject_raw, AcoliteReprojectSection, context="acolite.reproject")
 
         # --- Validate download strategy ---
         if "strategy" in download_raw:
@@ -604,7 +719,7 @@ tiles: {}
                     f"Valid values: {sorted(VALID_DOWNLOAD_STRATEGIES)}"
                 )
 
-        # Handle dsf_tile_dimensions: YAML list → tuple
+        # Handle dsf_tile_dimensions: YAML list → list
         if "dsf_tile_dimensions" in radcor_raw:
             val = radcor_raw["dsf_tile_dimensions"]
             radcor_raw = {**radcor_raw, "dsf_tile_dimensions": list(val)}
@@ -617,6 +732,9 @@ tiles: {}
             l2w=AcoliteL2WSection(**l2w_raw),
             output_format=AcoliteOutputSection(**output_raw),
             scl=SclSection(**scl_raw),
+            s2=AcoliteS2Section(**s2_raw),
+            dsf=AcoliteDsfSection(**dsf_raw),
+            reproject=AcoliteReprojectSection(**reproject_raw),
         )
 
         tiles = TilesSection.from_dict(tiles_raw or {})
@@ -636,9 +754,7 @@ tiles: {}
     # ---------------------------------------------------------------------------
 
     def to_acolite_config(self):
-        """
-        Convert the acolite section to an ``AcoliteConfig`` instance.
-        """
+        """Convert the acolite section to an ``AcoliteConfig`` instance."""
         from aquamatch.acolite_spec import (
             AcoliteConfig,
             IOConfig,
@@ -646,6 +762,9 @@ tiles: {}
             GlintConfig,
             L2WConfig,
             OutputConfig,
+            S2Config,
+            DsfConfig,
+            ReprojectConfig,
             AcoliteAtmosphericProcessor,
             AcoliteGlintCorrection,
         )
@@ -689,6 +808,11 @@ tiles: {}
             l2w_mask_water_expr=a.l2w.l2w_mask_water_expr,
             output_rhorc=a.l2w.output_rhorc,
             output_rhos=a.l2w.output_rhos,
+            l2w_mask_wave=a.l2w.l2w_mask_wave,
+            l2w_mask_threshold=a.l2w.l2w_mask_threshold,
+            l2w_mask_cirrus_threshold=a.l2w.l2w_mask_cirrus_threshold,
+            l2w_mask_smooth=a.l2w.l2w_mask_smooth,
+            l2w_mask_smooth_sigma=a.l2w.l2w_mask_smooth_sigma,
         )
 
         output_format = OutputConfig(
@@ -699,6 +823,46 @@ tiles: {}
             netcdf_compression_level=a.output_format.netcdf_compression_level,
             map_rgb=a.output_format.map_rgb,
             map_rgb_maxrange=a.output_format.map_rgb_maxrange,
+            output_xy=a.output_format.output_xy,
+            output_geometry=a.output_format.output_geometry,
+            l2w_export_geotiff=a.output_format.l2w_export_geotiff,
+            copy_datasets=a.output_format.copy_datasets,
+        )
+
+        s2 = S2Config(
+            s2_target_res=a.s2.s2_target_res,
+            merge_tiles=a.s2.merge_tiles,
+            merge_full_tiles=a.s2.merge_full_tiles,
+            extend_region=a.s2.extend_region,
+            geometry_type=a.s2.geometry_type,
+            geometry_res=a.s2.geometry_res,
+            blackfill_skip=a.s2.blackfill_skip,
+            blackfill_max=a.s2.blackfill_max,
+            blackfill_wave=a.s2.blackfill_wave,
+        )
+
+        dsf = DsfConfig(
+            dsf_aot_estimate=a.dsf.dsf_aot_estimate,
+            dsf_spectrum_option=a.dsf.dsf_spectrum_option,
+            dsf_nbands=a.dsf.dsf_nbands,
+            dsf_nbands_fit=a.dsf.dsf_nbands_fit,
+            dsf_filter_rhot=a.dsf.dsf_filter_rhot,
+            dsf_filter_percentile=a.dsf.dsf_filter_percentile,
+            dsf_smooth_aot=a.dsf.dsf_smooth_aot,
+            dsf_fixed_aot=a.dsf.dsf_fixed_aot,
+            dsf_aot_most_common_model=a.dsf.dsf_aot_most_common_model,
+            dsf_allow_lut_boundaries=a.dsf.dsf_allow_lut_boundaries,
+            dsf_min_tile_aot=a.dsf.dsf_min_tile_aot,
+            dsf_max_tile_aot=a.dsf.dsf_max_tile_aot,
+        )
+
+        reproject = ReprojectConfig(
+            reproject_outputs=a.reproject.reproject_outputs,
+            output_projection_epsg=a.reproject.output_projection_epsg,
+            output_projection_resolution=a.reproject.output_projection_resolution,
+            output_projection_resampling_method=(
+                a.reproject.output_projection_resampling_method
+            ),
         )
 
         cfg = AcoliteConfig(
@@ -708,6 +872,9 @@ tiles: {}
             glint=glint,
             l2w=l2w,
             output_format=output_format,
+            s2=s2,
+            dsf=dsf,
+            reproject=reproject,
         )
         return cfg
 
@@ -736,17 +903,7 @@ tiles: {}
         }
 
     def to_sentinel_args(self) -> dict:
-        """
-        Return arguments for the Sentinel-2 catalog and download steps.
-
-        Returns
-        -------
-        dict
-            Keys for catalog building (``csv``, ``catalog_json``,
-            ``time_delta``, ``cloud_cover``) and download
-            (``output_dir``, ``strategy``, ``max_per_date``,
-            ``max_cloud_cover``, ``download_scl``).
-        """
+        """Return arguments for the Sentinel-2 catalog and download steps."""
         return {
             "csv": Path(self.sentinel.csv),
             "catalog_json": Path(self.sentinel.catalog_json),
@@ -764,16 +921,13 @@ tiles: {}
     # ---------------------------------------------------------------------------
 
     def run(self, dry_run: bool = False) -> dict:
-        """
-        Execute the full pipeline in order, respecting ``enabled`` flags.
-        """
+        """Execute the full pipeline in order, respecting ``enabled`` flags."""
         summary: dict[str, Any] = {}
         logger.info(
             f"=== Pipeline: {self.campaign_name} ==="
             + (" [DRY RUN]" if dry_run else "")
         )
 
-        # --- Step 1: In situ ---
         if not self.insitu.enabled:
             logger.info("[Step 1/4] in situ — SKIPPED (enabled: false)")
             summary["insitu"] = {"status": "skipped"}
@@ -788,7 +942,6 @@ tiles: {}
                     logger.error(f"  In situ step failed: {exc}")
                     summary["insitu"] = {"status": "error", "error": str(exc)}
 
-        # --- Step 2: Sentinel catalog ---
         if not self.sentinel.enabled:
             logger.info("[Step 2/4] Sentinel catalog — SKIPPED (enabled: false)")
             summary["sentinel"] = {"status": "skipped"}
@@ -803,7 +956,6 @@ tiles: {}
                     logger.error(f"  Sentinel catalog step failed: {exc}")
                     summary["sentinel"] = {"status": "error", "error": str(exc)}
 
-        # --- Step 3: Download ---
         if not self.download.enabled:
             logger.info("[Step 3/4] Download — SKIPPED (enabled: false)")
             summary["download"] = {"status": "skipped"}
@@ -818,7 +970,6 @@ tiles: {}
                     logger.error(f"  Download step failed: {exc}")
                     summary["download"] = {"status": "error", "error": str(exc)}
 
-        # --- Step 4: ACOLITE ---
         if not self.acolite.enabled:
             logger.info("[Step 4/4] ACOLITE — SKIPPED (enabled: false)")
             summary["acolite"] = {"status": "skipped"}
@@ -996,7 +1147,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         default=False,
-        help="Log pipeline mode without executing them (only valid with --run).",
+        help="Log pipeline steps without executing them (only valid with --run).",
     )
     parser.add_argument(
         "--force",
@@ -1019,7 +1170,7 @@ def main(argv=None) -> None:
     args = parser.parse_args(argv)
 
     if args.generate:
-        out = PipelineConfig.generate(args.generate)
+        out = PipelineConfig.g-enerate(args.generate)
         print(f"Template written to: {out}")
 
     elif args.run:
