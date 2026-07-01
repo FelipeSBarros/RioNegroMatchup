@@ -76,6 +76,10 @@ class SclSection:
     min_area_m2: float = 5_000.0
     simplify_tolerance: float = 20.0
     buffer_m: float = 0.0
+    # --- Water polygon datacube ---
+    build_polygon_datacube: bool = False
+    polygon_datacube_path: str = "data/water_polygons.gpkg"
+    polygon_datacube_overwrite: bool = False
 
 
 @dataclass
@@ -266,6 +270,35 @@ class AcoliteReprojectSection:
 
 
 @dataclass
+class DatacubeSection:
+    """
+    L2W product datacube configuration.
+
+    Controls the aggregation of per-scene ACOLITE L2W NetCDF files into a
+    single Zarr datacube using :func:`~aquamatch.acolite_spec.append_l2w_to_datacube`.
+
+    Disabled by default (``enabled: false``) because it requires the optional
+    ``xarray``, ``rioxarray``, and ``zarr`` dependencies and can produce large
+    output files.  Enable explicitly once ACOLITE processing is complete.
+
+    ``variables`` controls which L2W parameters are written to the datacube.
+    Set to ``null`` to include every variable present in each L2W file, or
+    list specific parameter names (e.g. ``[t_nechad, spm_nechad, ndwi]``) to
+    restrict the datacube to a subset.  A warning is emitted for any listed
+    variable that is absent from a particular L2W file — the file is still
+    processed for the variables that are present.
+    """
+
+    enabled: bool = False
+    output_path: str = "data/l2w_datacube.zarr"
+    variables: Optional[list[str]] = None  # None = all variables in each L2W file
+    target_crs: str = "EPSG:4326"
+    target_resolution: float = 0.0001  # degrees (~10 m at equator)
+    overwrite_date: bool = False
+    zarr_chunks: dict = field(default_factory=lambda: {"time": 1, "y": 512, "x": 512})
+
+
+@dataclass
 class AcoliteSection:
     enabled: bool = True
     acolite_executable: str = "/path/to/acolite/acolite.py"
@@ -282,6 +315,7 @@ class AcoliteSection:
     s2: AcoliteS2Section = field(default_factory=AcoliteS2Section)
     dsf: AcoliteDsfSection = field(default_factory=AcoliteDsfSection)
     reproject: AcoliteReprojectSection = field(default_factory=AcoliteReprojectSection)
+    datacube: DatacubeSection = field(default_factory=DatacubeSection)
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +718,7 @@ tiles: {}
             "s2",
             "dsf",
             "reproject",
+            "datacube",
         }
         acolite_sub = {
             k: v for k, v in acolite_raw.items() if k not in _ACOLITE_SUBSECTIONS
@@ -699,6 +734,7 @@ tiles: {}
         s2_raw = acolite_raw.get("s2", {})
         dsf_raw = acolite_raw.get("dsf", {})
         reproject_raw = acolite_raw.get("reproject", {})
+        datacube_raw = acolite_raw.get("datacube", {})
 
         _check_keys(io_raw, AcoliteIOSection, context="acolite.io")
         _check_keys(radcor_raw, AcoliteRadCorSection, context="acolite.radcor")
@@ -709,6 +745,7 @@ tiles: {}
         _check_keys(s2_raw, AcoliteS2Section, context="acolite.s2")
         _check_keys(dsf_raw, AcoliteDsfSection, context="acolite.dsf")
         _check_keys(reproject_raw, AcoliteReprojectSection, context="acolite.reproject")
+        _check_keys(datacube_raw, DatacubeSection, context="acolite.datacube")
 
         # --- Validate download strategy ---
         if "strategy" in download_raw:
