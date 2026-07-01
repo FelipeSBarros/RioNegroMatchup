@@ -1305,6 +1305,16 @@ def run_acolite_pipeline(
                 polygon_clip=_global_polygon is not None,
             )
 
+        # Validate the fully-assembled config before touching the filesystem.
+        # This catches bad sub-config values (invalid s2_target_res, dsf_aot_estimate,
+        # reproject_outputs without EPSG, etc.) as clear Python errors rather than
+        # silent bad settings files passed to the ACOLITE binary.
+        # IOConfig.inputfile validation is skipped here because inputfile is set
+        # per-scene inside run_batch, not at the pipeline level.
+        cfg.s2.validate()
+        cfg.dsf.validate()
+        cfg.reproject.validate()
+
         safe_list = sorted(safe_dir_path.rglob("*.SAFE"))
         if not safe_list:
             logger.warning(f"No .SAFE folders found in {safe_dir_path}")
