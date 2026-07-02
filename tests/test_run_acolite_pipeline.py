@@ -21,7 +21,14 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from aquamatch.acolite_spec import AcoliteConfig, IOConfig, run_acolite_pipeline
+from aquamatch.acolite_spec import (
+    AcoliteConfig,
+    IOConfig,
+    run_acolite_pipeline,
+    S2Config,
+    DsfConfig,
+    ReprojectConfig,
+)
 from aquamatch.pipeline_config import (
     AcoliteSection,
     AcoliteIOSection,
@@ -1025,3 +1032,125 @@ class TestAcoliteSpecCLI:
         assert args.no_skip_existing is True
         # And it must invert to skip_existing=False when forwarded
         assert not args.no_skip_existing is False
+
+
+class TestRunAcolitePipelineSubConfigValidation:
+    """
+    run_acolite_pipeline() must validate S2Config, DsfConfig, and
+    ReprojectConfig before calling run_batch().  An invalid sub-config
+    value must surface as status='error' with a descriptive message,
+    not as a silent bad settings file passed to the ACOLITE binary.
+    """
+
+    def test_invalid_s2_target_res_returns_error(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+            s2=S2Config(s2_target_res=15),  # invalid — not 10, 20, or 60
+        )
+        result = run_acolite_pipeline(
+            acolite_config=cfg,
+            safe_dir=safe_dir,
+            output=tmp_path / "out",
+            use_scl=False,
+        )
+        assert result["status"] == "error"
+        assert "s2_target_res" in result["error"]
+
+    def test_invalid_dsf_aot_estimate_returns_error(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+            dsf=DsfConfig(dsf_aot_estimate="magic"),  # invalid
+        )
+        result = run_acolite_pipeline(
+            acolite_config=cfg,
+            safe_dir=safe_dir,
+            output=tmp_path / "out",
+            use_scl=False,
+        )
+        assert result["status"] == "error"
+        assert "dsf_aot_estimate" in result["error"]
+
+    def test_reproject_without_epsg_returns_error(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+            reproject=ReprojectConfig(reproject_outputs=True),  # missing EPSG
+        )
+        result = run_acolite_pipeline(
+            acolite_config=cfg,
+            safe_dir=safe_dir,
+            output=tmp_path / "out",
+            use_scl=False,
+        )
+        assert result["status"] == "error"
+        assert "output_projection_epsg" in result["error"]
+
+    def test_invalid_dsf_fixed_aot_returns_error(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+            dsf=DsfConfig(dsf_fixed_aot=99.0),  # out of [0, 5] range
+        )
+        result = run_acolite_pipeline(
+            acolite_config=cfg,
+            safe_dir=safe_dir,
+            output=tmp_path / "out",
+            use_scl=False,
+        )
+        assert result["status"] == "error"
+        assert "dsf_fixed_aot" in result["error"]
+
+    def test_valid_sub_configs_do_not_error(self, tmp_path):
+        """Valid sub-config values must not trigger a validation error."""
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+            s2=S2Config(s2_target_res=20),
+            dsf=DsfConfig(dsf_fixed_aot=0.1),
+            reproject=ReprojectConfig(reproject_outputs=False),
+        )
+        result = run_acolite_pipeline(
+            acolite_config=cfg,
+            safe_dir=safe_dir,
+            output=tmp_path / "out",
+            use_scl=False,
+        )
+        assert result["status"] == "success"
+
+    def test_validation_fires_before_run_batch(self, tmp_path):
+        """run_batch must never be called when sub-config validation fails."""
+        from unittest.mock import patch
+
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        cfg = AcoliteConfig(
+            acolite_executable=str(exe),
+            io=IOConfig(inputfile="", output=str(tmp_path / "out")),
+            s2=S2Config(s2_target_res=15),
+        )
+        with patch.object(cfg, "run_batch") as mock_batch:
+            run_acolite_pipeline(
+                acolite_config=cfg,
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                use_scl=False,
+            )
+            mock_batch.assert_not_called()
