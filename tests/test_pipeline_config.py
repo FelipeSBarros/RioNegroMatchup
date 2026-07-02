@@ -680,21 +680,28 @@ class TestRunEnabledFlags:
     def _make_cfg(self, **enabled_overrides) -> PipelineConfig:
         cfg = PipelineConfig()
         for section, val in enabled_overrides.items():
-            getattr(cfg, section).enabled = val
+            if section == "datacube":
+                cfg.acolite.datacube.enabled = val
+            else:
+                getattr(cfg, section).enabled = val
         return cfg
 
     def test_all_disabled_nothing_called(self):
-        cfg = self._make_cfg(
-            insitu=False, sentinel=False, download=False, acolite=False
-        )
+        cfg = PipelineConfig()
+        cfg.insitu.enabled = False
+        cfg.sentinel.enabled = False
+        cfg.download.enabled = False
+        cfg.acolite.enabled = False
+        cfg.acolite.datacube.enabled = False
         summary = cfg.run()
-        for step in ("insitu", "sentinel", "download", "acolite"):
+        for step in ("insitu", "sentinel", "download", "acolite", "datacube"):
             assert summary[step]["status"] == "skipped"
 
     def test_dry_run_all_enabled(self):
         cfg = PipelineConfig()
+        cfg.acolite.datacube.enabled = True
         summary = cfg.run(dry_run=True)
-        for step in ("insitu", "sentinel", "download", "acolite"):
+        for step in ("insitu", "sentinel", "download", "acolite", "datacube"):
             assert summary[step]["status"] == "dry_run"
 
     def test_only_insitu_disabled(self):
@@ -711,12 +718,33 @@ class TestRunEnabledFlags:
         assert summary["acolite"]["status"] == "skipped"
         assert summary["insitu"]["status"] == "dry_run"
 
-    def test_run_returns_dict_with_all_steps(self):
-        cfg = self._make_cfg(
-            insitu=False, sentinel=False, download=False, acolite=False
-        )
+    def test_datacube_disabled_by_default(self):
+        """datacube.enabled defaults to False — step must be skipped."""
+        cfg = PipelineConfig()
+        summary = cfg.run(dry_run=True)
+        assert summary["datacube"]["status"] == "skipped"
+
+    def test_datacube_enabled_runs_in_dry_run(self):
+        cfg = PipelineConfig()
+        cfg.acolite.datacube.enabled = True
+        summary = cfg.run(dry_run=True)
+        assert summary["datacube"]["status"] == "dry_run"
+
+    def test_run_returns_dict_with_all_five_steps(self):
+        cfg = PipelineConfig()
+        cfg.insitu.enabled = False
+        cfg.sentinel.enabled = False
+        cfg.download.enabled = False
+        cfg.acolite.enabled = False
+        cfg.acolite.datacube.enabled = False
         summary = cfg.run()
-        assert set(summary.keys()) == {"insitu", "sentinel", "download", "acolite"}
+        assert set(summary.keys()) == {
+            "insitu",
+            "sentinel",
+            "download",
+            "acolite",
+            "datacube",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -848,6 +876,527 @@ class TestRunAcoliteTileConfigWiring:
         pipeline = self._make_pipeline_cfg(tmp_path)
         result = pipeline._run_acolite()
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# SclSection extended fields — polygon datacube
+# ---------------------------------------------------------------------------
+
+
+class TestSclSectionPolygonDatacube:
+
+    def test_build_polygon_datacube_default_false(self):
+        from aquamatch.pipeline_config import SclSection
+
+        assert SclSection().build_polygon_datacube is False
+
+    def test_polygon_datacube_path_default(self):
+        from aquamatch.pipeline_config import SclSection
+
+        assert SclSection().polygon_datacube_path == "data/water_polygons.gpkg"
+
+    def test_polygon_datacube_overwrite_default_false(self):
+        from aquamatch.pipeline_config import SclSection
+
+        assert SclSection().polygon_datacube_overwrite is False
+
+    def test_build_polygon_datacube_loaded_from_yaml(self, tmp_path):
+        p = _write_yaml(
+            tmp_path,
+            "acolite:\n  scl:\n    build_polygon_datacube: true\n",
+        )
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.scl.build_polygon_datacube is True
+
+    def test_polygon_datacube_path_loaded_from_yaml(self, tmp_path):
+        p = _write_yaml(
+            tmp_path,
+            "acolite:\n  scl:\n    polygon_datacube_path: data/my.gpkg\n",
+        )
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.scl.polygon_datacube_path == "data/my.gpkg"
+
+    def test_polygon_datacube_overwrite_loaded_from_yaml(self, tmp_path):
+        p = _write_yaml(
+            tmp_path,
+            "acolite:\n  scl:\n    polygon_datacube_overwrite: true\n",
+        )
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.scl.polygon_datacube_overwrite is True
+
+    def test_unknown_scl_key_still_raises(self, tmp_path):
+        p = _write_yaml(tmp_path, "acolite:\n  scl:\n    bad_key: 1\n")
+        with pytest.raises(ValueError, match="bad_key"):
+            PipelineConfig.from_yaml(p)
+
+    def test_template_contains_build_polygon_datacube(self, tmp_path):
+        out = tmp_path / "t.yaml"
+        PipelineConfig.generate(out)
+        assert "build_polygon_datacube" in out.read_text()
+
+    def test_template_contains_polygon_datacube_path(self, tmp_path):
+        out = tmp_path / "t.yaml"
+        PipelineConfig.generate(out)
+        assert "polygon_datacube_path" in out.read_text()
+
+    def test_scl_reuses_same_area_params_as_polygon_datacube(self):
+        """min_area_m2 etc. live only in SclSection — no duplication."""
+        from aquamatch.pipeline_config import SclSection
+
+        s = SclSection()
+        # Only one copy of each parameter exists
+        assert hasattr(s, "min_area_m2")
+        assert not hasattr(s, "polygon_datacube_min_area_m2")
+
+
+# ---------------------------------------------------------------------------
+# DatacubeSection — L2W product datacube
+# ---------------------------------------------------------------------------
+
+
+class TestDatacubeSection:
+
+    def test_enabled_default_false(self):
+        from aquamatch.pipeline_config import DatacubeSection
+
+        assert DatacubeSection().enabled is False
+
+    def test_output_path_default(self):
+        from aquamatch.pipeline_config import DatacubeSection
+
+        assert DatacubeSection().output_path == "data/l2w_datacube.zarr"
+
+    def test_variables_default_none(self):
+        from aquamatch.pipeline_config import DatacubeSection
+
+        assert DatacubeSection().variables is None
+
+    def test_target_crs_default(self):
+        from aquamatch.pipeline_config import DatacubeSection
+
+        assert DatacubeSection().target_crs == "EPSG:4326"
+
+    def test_target_resolution_default(self):
+        from aquamatch.pipeline_config import DatacubeSection
+
+        assert DatacubeSection().target_resolution == pytest.approx(0.0001)
+
+    def test_overwrite_date_default_false(self):
+        from aquamatch.pipeline_config import DatacubeSection
+
+        assert DatacubeSection().overwrite_date is False
+
+    def test_zarr_chunks_default(self):
+        from aquamatch.pipeline_config import DatacubeSection
+
+        assert DatacubeSection().zarr_chunks == {"time": 1, "y": 512, "x": 512}
+
+
+class TestAcoliteSectionDatacubeSubSection:
+
+    def test_datacube_subsection_present(self):
+        from aquamatch.pipeline_config import AcoliteSection, DatacubeSection
+
+        assert hasattr(AcoliteSection(), "datacube")
+        assert isinstance(AcoliteSection().datacube, DatacubeSection)
+
+    def test_datacube_disabled_by_default(self):
+        from aquamatch.pipeline_config import AcoliteSection
+
+        assert AcoliteSection().datacube.enabled is False
+
+
+class TestFromYamlDatacube:
+
+    def test_missing_datacube_section_uses_defaults(self, tmp_path):
+        p = _write_yaml(tmp_path, "campaign_name: minimal\n")
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.datacube.enabled is False
+        assert cfg.acolite.datacube.variables is None
+
+    def test_datacube_enabled_loaded(self, tmp_path):
+        p = _write_yaml(tmp_path, "acolite:\n  datacube:\n    enabled: true\n")
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.datacube.enabled is True
+
+    def test_datacube_output_path_loaded(self, tmp_path):
+        p = _write_yaml(
+            tmp_path, "acolite:\n  datacube:\n    output_path: data/cube.zarr\n"
+        )
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.datacube.output_path == "data/cube.zarr"
+
+    def test_datacube_variables_list_loaded(self, tmp_path):
+        p = _write_yaml(
+            tmp_path,
+            "acolite:\n  datacube:\n    variables: [t_nechad, spm_nechad, ndwi]\n",
+        )
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.datacube.variables == ["t_nechad", "spm_nechad", "ndwi"]
+
+    def test_datacube_variables_null_loaded(self, tmp_path):
+        p = _write_yaml(tmp_path, "acolite:\n  datacube:\n    variables: null\n")
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.datacube.variables is None
+
+    def test_datacube_target_crs_loaded(self, tmp_path):
+        p = _write_yaml(
+            tmp_path,
+            'acolite:\n  datacube:\n    target_crs: "EPSG:32721"\n',
+        )
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.datacube.target_crs == "EPSG:32721"
+
+    def test_datacube_overwrite_date_loaded(self, tmp_path):
+        p = _write_yaml(tmp_path, "acolite:\n  datacube:\n    overwrite_date: true\n")
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.datacube.overwrite_date is True
+
+    def test_datacube_zarr_chunks_loaded(self, tmp_path):
+        p = _write_yaml(
+            tmp_path,
+            "acolite:\n  datacube:\n    zarr_chunks:\n      time: 2\n      y: 256\n      x: 256\n",
+        )
+        cfg = PipelineConfig.from_yaml(p)
+        assert cfg.acolite.datacube.zarr_chunks == {"time": 2, "y": 256, "x": 256}
+
+    def test_unknown_datacube_key_raises(self, tmp_path):
+        p = _write_yaml(tmp_path, "acolite:\n  datacube:\n    bad_key: 99\n")
+        with pytest.raises(ValueError, match="bad_key"):
+            PipelineConfig.from_yaml(p)
+
+    def test_template_round_trips_datacube(self, tmp_path):
+        out = tmp_path / "template.yaml"
+        PipelineConfig.generate(out)
+        cfg = PipelineConfig.from_yaml(out)
+        assert cfg.acolite.datacube.enabled is False
+        assert cfg.acolite.datacube.variables is None
+        assert cfg.acolite.datacube.zarr_chunks == {"time": 1, "y": 512, "x": 512}
+
+
+class TestGenerateDatacube:
+
+    def _template(self, tmp_path: Path) -> str:
+        out = tmp_path / "template.yaml"
+        PipelineConfig.generate(out)
+        return out.read_text()
+
+    def test_template_contains_datacube_section(self, tmp_path):
+        assert "datacube:" in self._template(tmp_path)
+
+    def test_template_contains_l2w_datacube_path(self, tmp_path):
+        assert "l2w_datacube.zarr" in self._template(tmp_path)
+
+    def test_template_contains_variables(self, tmp_path):
+        assert "variables:" in self._template(tmp_path)
+
+    def test_template_contains_target_crs(self, tmp_path):
+        assert "target_crs" in self._template(tmp_path)
+
+    def test_template_contains_target_resolution(self, tmp_path):
+        assert "target_resolution" in self._template(tmp_path)
+
+    def test_template_contains_overwrite_date(self, tmp_path):
+        assert "overwrite_date" in self._template(tmp_path)
+
+    def test_template_contains_zarr_chunks(self, tmp_path):
+        assert "zarr_chunks" in self._template(tmp_path)
+
+    def test_template_contains_build_polygon_datacube(self, tmp_path):
+        assert "build_polygon_datacube" in self._template(tmp_path)
+
+    def test_template_datacube_enabled_is_false(self, tmp_path):
+        assert "enabled: false" in self._template(tmp_path)
+
+
+class TestRunPolygonDatacube:
+
+    def _make_pipeline_cfg(self, tmp_path):
+        cfg = PipelineConfig()
+        cfg.acolite.acolite_executable = str(tmp_path / "fake_acolite")
+        cfg.acolite.io.safe_dir = str(tmp_path / "safe")
+        cfg.acolite.io.scl_dir = str(tmp_path / "scl")
+        cfg.acolite.io.output = str(tmp_path / "output")
+        cfg.acolite.scl.use_scl = False
+        cfg.acolite.scl.build_polygon_datacube = True
+        cfg.acolite.scl.polygon_datacube_path = str(tmp_path / "water_polygons.gpkg")
+        return cfg
+
+    def test_skipped_when_no_scl_files(self, tmp_path):
+        cfg = self._make_pipeline_cfg(tmp_path)
+        scl_dir = tmp_path / "scl"
+        scl_dir.mkdir()  # empty — no SCL files
+        result = cfg._run_polygon_datacube()
+        assert result["status"] == "skipped"
+        assert "No SCL files" in result["reason"]
+
+    def test_calls_build_water_polygon_datacube(self, tmp_path):
+        from unittest.mock import patch, MagicMock
+
+        cfg = self._make_pipeline_cfg(tmp_path)
+        scl_dir = tmp_path / "scl"
+        scl_dir.mkdir()
+        # Create fake SCL files
+        (scl_dir / "scene1_SCL.tif").write_bytes(b"fake")
+        (scl_dir / "scene2_SCL.tif").write_bytes(b"fake")
+
+        captured = {}
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            captured["n_records"] = len(records)
+            captured["overwrite"] = overwrite
+            captured["kwargs"] = kwargs
+            return Path(output_path)
+
+        with patch(
+            "aquamatch.pipeline_config.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            result = cfg._run_polygon_datacube()
+
+        assert captured["n_records"] == 2
+        assert captured["overwrite"] is False
+        assert "min_area_m2" in captured["kwargs"]
+        assert result["status"] == "ok"
+        assert result["n_records"] == 2
+
+    def test_forwards_scl_kwargs(self, tmp_path):
+        from unittest.mock import patch
+
+        cfg = self._make_pipeline_cfg(tmp_path)
+        cfg.acolite.scl.min_area_m2 = 1234.0
+        cfg.acolite.scl.simplify_tolerance = 15.0
+        cfg.acolite.scl.buffer_m = 30.0
+        scl_dir = tmp_path / "scl"
+        scl_dir.mkdir()
+        (scl_dir / "scene1_SCL.tif").write_bytes(b"fake")
+
+        captured_kwargs = {}
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            captured_kwargs.update(kwargs)
+            return Path(output_path)
+
+        with patch(
+            "aquamatch.pipeline_config.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            cfg._run_polygon_datacube()
+
+        assert captured_kwargs["min_area_m2"] == pytest.approx(1234.0)
+        assert captured_kwargs["simplify_tolerance"] == pytest.approx(15.0)
+        assert captured_kwargs["buffer_m"] == pytest.approx(30.0)
+
+    def test_overwrite_forwarded(self, tmp_path):
+        from unittest.mock import patch
+
+        cfg = self._make_pipeline_cfg(tmp_path)
+        cfg.acolite.scl.polygon_datacube_overwrite = True
+        scl_dir = tmp_path / "scl"
+        scl_dir.mkdir()
+        (scl_dir / "scene1_SCL.tif").write_bytes(b"fake")
+
+        captured = {}
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            captured["overwrite"] = overwrite
+            return Path(output_path)
+
+        with patch(
+            "aquamatch.pipeline_config.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            cfg._run_polygon_datacube()
+
+        assert captured["overwrite"] is True
+
+    def test_polygon_datacube_in_acolite_result_when_enabled(self, tmp_path):
+        from unittest.mock import patch
+
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        cfg = self._make_pipeline_cfg(tmp_path)
+        scl_dir = tmp_path / "scl"
+        scl_dir.mkdir()
+        (scl_dir / "scene1_SCL.tif").write_bytes(b"fake")
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            return Path(output_path)
+
+        with patch(
+            "aquamatch.acolite_spec.AcoliteConfig.run_batch", return_value=[]
+        ), patch(
+            "aquamatch.pipeline_config.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            result = cfg._run_acolite()
+
+        assert "polygon_datacube" in result
+        assert result["polygon_datacube"]["status"] == "ok"
+
+    def test_polygon_datacube_skipped_in_acolite_result_when_disabled(self, tmp_path):
+        from unittest.mock import patch
+
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        cfg = self._make_pipeline_cfg(tmp_path)
+        cfg.acolite.scl.build_polygon_datacube = False
+
+        with patch("aquamatch.acolite_spec.AcoliteConfig.run_batch", return_value=[]):
+            result = cfg._run_acolite()
+
+        assert result["polygon_datacube"]["status"] == "skipped"
+
+
+class TestRunL2WDatacube:
+
+    def _make_pipeline_cfg(self, tmp_path):
+        cfg = PipelineConfig()
+        cfg.acolite.io.output = str(tmp_path / "output")
+        cfg.acolite.datacube.enabled = True
+        cfg.acolite.datacube.output_path = str(tmp_path / "l2w_datacube.zarr")
+        return cfg
+
+    def test_skipped_when_no_l2w_files(self, tmp_path):
+        cfg = self._make_pipeline_cfg(tmp_path)
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        result = cfg._run_l2w_datacube()
+        assert result["status"] == "skipped"
+        assert "No *_L2W.nc" in result["reason"]
+
+    def test_calls_append_l2w_per_file(self, tmp_path):
+        from unittest.mock import patch
+
+        cfg = self._make_pipeline_cfg(tmp_path)
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        (output_dir / "scene1_L2W.nc").write_bytes(b"fake")
+        (output_dir / "scene2_L2W.nc").write_bytes(b"fake")
+
+        call_count = {"n": 0}
+
+        def fake_append(l2w_nc, datacube_path, **kwargs):
+            call_count["n"] += 1
+            return Path(datacube_path)
+
+        with patch(
+            "aquamatch.pipeline_config.append_l2w_to_datacube",
+            side_effect=fake_append,
+        ):
+            result = cfg._run_l2w_datacube()
+
+        assert call_count["n"] == 2
+        assert result["status"] == "ok"
+        assert result["n_processed"] == 2
+        assert result["n_error"] == 0
+
+    def test_forwards_datacube_kwargs(self, tmp_path):
+        from unittest.mock import patch
+
+        cfg = self._make_pipeline_cfg(tmp_path)
+        cfg.acolite.datacube.target_crs = "EPSG:32721"
+        cfg.acolite.datacube.target_resolution = 0.0002
+        cfg.acolite.datacube.overwrite_date = True
+        cfg.acolite.datacube.zarr_chunks = {"time": 2, "y": 256, "x": 256}
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        (output_dir / "scene1_L2W.nc").write_bytes(b"fake")
+
+        captured = {}
+
+        def fake_append(l2w_nc, datacube_path, **kwargs):
+            captured.update(kwargs)
+            return Path(datacube_path)
+
+        with patch(
+            "aquamatch.pipeline_config.append_l2w_to_datacube",
+            side_effect=fake_append,
+        ):
+            cfg._run_l2w_datacube()
+
+        assert captured["target_crs"] == "EPSG:32721"
+        assert captured["target_resolution"] == pytest.approx(0.0002)
+        assert captured["overwrite_date"] is True
+        assert captured["zarr_chunks"] == {"time": 2, "y": 256, "x": 256}
+
+    def test_variables_none_forwarded(self, tmp_path):
+        from unittest.mock import patch
+
+        cfg = self._make_pipeline_cfg(tmp_path)
+        cfg.acolite.datacube.variables = None
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        (output_dir / "scene1_L2W.nc").write_bytes(b"fake")
+
+        captured = {}
+
+        def fake_append(l2w_nc, datacube_path, **kwargs):
+            captured["variables"] = kwargs.get("variables")
+            return Path(datacube_path)
+
+        with patch(
+            "aquamatch.pipeline_config.append_l2w_to_datacube",
+            side_effect=fake_append,
+        ):
+            cfg._run_l2w_datacube()
+
+        assert captured["variables"] is None
+
+    def test_error_in_one_file_continues_processing(self, tmp_path):
+        from unittest.mock import patch
+
+        cfg = self._make_pipeline_cfg(tmp_path)
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        (output_dir / "scene1_L2W.nc").write_bytes(b"fake")
+        (output_dir / "scene2_L2W.nc").write_bytes(b"fake")
+
+        call_count = {"n": 0}
+
+        def fake_append(l2w_nc, datacube_path, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("simulated failure")
+            return Path(datacube_path)
+
+        with patch(
+            "aquamatch.pipeline_config.append_l2w_to_datacube",
+            side_effect=fake_append,
+        ):
+            result = cfg._run_l2w_datacube()
+
+        assert result["n_processed"] == 1
+        assert result["n_error"] == 1
+        assert result["status"] == "ok"
+
+    def test_warns_on_missing_variable(self, tmp_path, caplog):
+        import logging
+        from unittest.mock import patch, MagicMock
+
+        cfg = self._make_pipeline_cfg(tmp_path)
+        cfg.acolite.datacube.variables = ["t_nechad", "missing_var"]
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        (output_dir / "scene1_L2W.nc").write_bytes(b"fake")
+
+        mock_ds = MagicMock()
+        mock_ds.data_vars = {"t_nechad": None}  # missing_var not present
+        mock_ds.__enter__ = lambda s: mock_ds
+        mock_ds.__exit__ = MagicMock(return_value=False)
+
+        def fake_append(l2w_nc, datacube_path, **kwargs):
+            return Path(datacube_path)
+
+        with patch(
+            "aquamatch.pipeline_config.append_l2w_to_datacube", side_effect=fake_append
+        ), patch("xarray.open_dataset", return_value=mock_ds), caplog.at_level(
+            logging.WARNING, logger="aquamatch.pipeline_config"
+        ):
+            cfg._run_l2w_datacube()
+
+        assert any("missing_var" in msg for msg in caplog.messages)
 
 
 # ---------------------------------------------------------------------------

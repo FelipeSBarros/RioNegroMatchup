@@ -29,6 +29,8 @@ import logging
 from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 from typing import Any, Optional
+from aquamatch.scl_water import build_water_polygon_datacube
+from aquamatch.acolite_spec import append_l2w_to_datacube
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +583,15 @@ acolite:
     simplify_tolerance: 20.0
     buffer_m: 0.0
 
+    # --- Water polygon datacube ---
+    # When build_polygon_datacube is true, all SCL files in scl_dir are
+    # processed after ACOLITE runs and aggregated into a single GeoPackage.
+    # The same min_area_m2, simplify_tolerance, and buffer_m values above
+    # are reused — no duplication needed.
+    build_polygon_datacube: false
+    polygon_datacube_path: data/water_polygons.gpkg
+    polygon_datacube_overwrite: false   # true = rebuild from scratch each run
+
   # ---------------------------------------------------------------------------
   # Sentinel-2 specific options
   # ---------------------------------------------------------------------------
@@ -637,6 +648,32 @@ acolite:
     output_projection_epsg: null     # e.g. 32721 for UTM zone 21S (Uruguay/NE Argentina)
     output_projection_resolution: null  # Target pixel size in metres (null = native)
     output_projection_resampling_method: bilinear  # nearest | bilinear | cubic
+
+  # ---------------------------------------------------------------------------
+  # L2W product datacube (Step 5)
+  # ---------------------------------------------------------------------------
+  # Aggregates all *_L2W.nc files produced by ACOLITE into a single Zarr
+  # datacube using append_l2w_to_datacube().
+  #
+  # Disabled by default (enabled: false) because it requires xarray,
+  # rioxarray, and zarr.  Enable once ACOLITE processing is complete.
+  #
+  # variables: which L2W parameters to include.  null = all variables
+  # present in each file.  List specific names to restrict the datacube,
+  # e.g. [t_nechad, spm_nechad, ndwi].  A warning is emitted for any
+  # listed variable absent from a particular file; processing continues
+  # for variables that are present.
+  datacube:
+    enabled: false
+    output_path: data/l2w_datacube.zarr
+    variables: null                  # null = all | e.g. [t_nechad, spm_nechad, ndwi]
+    target_crs: "EPSG:4326"
+    target_resolution: 0.0001        # degrees (~10 m at equator)
+    overwrite_date: false            # true = replace existing dates in datacube
+    zarr_chunks:
+      time: 1
+      y: 512
+      x: 512
 
 # =============================================================================
 # Tile spatial restrictions
@@ -772,6 +809,7 @@ tiles: {}
             s2=AcoliteS2Section(**s2_raw),
             dsf=AcoliteDsfSection(**dsf_raw),
             reproject=AcoliteReprojectSection(**reproject_raw),
+            datacube=DatacubeSection(**datacube_raw),
         )
 
         tiles = TilesSection.from_dict(tiles_raw or {})
@@ -966,10 +1004,10 @@ tiles: {}
         )
 
         if not self.insitu.enabled:
-            logger.info("[Step 1/4] in situ — SKIPPED (enabled: false)")
+            logger.info("[Step 1/5] in situ — SKIPPED (enabled: false)")
             summary["insitu"] = {"status": "skipped"}
         else:
-            logger.info("[Step 1/4] In situ data preparation")
+            logger.info("[Step 1/5] In situ data preparation")
             if dry_run:
                 summary["insitu"] = {"status": "dry_run"}
             else:
@@ -980,10 +1018,10 @@ tiles: {}
                     summary["insitu"] = {"status": "error", "error": str(exc)}
 
         if not self.sentinel.enabled:
-            logger.info("[Step 2/4] Sentinel catalog — SKIPPED (enabled: false)")
+            logger.info("[Step 2/5] Sentinel catalog — SKIPPED (enabled: false)")
             summary["sentinel"] = {"status": "skipped"}
         else:
-            logger.info("[Step 2/4] Sentinel-2 catalog search")
+            logger.info("[Step 2/5] Sentinel-2 catalog search")
             if dry_run:
                 summary["sentinel"] = {"status": "dry_run"}
             else:
@@ -994,10 +1032,10 @@ tiles: {}
                     summary["sentinel"] = {"status": "error", "error": str(exc)}
 
         if not self.download.enabled:
-            logger.info("[Step 3/4] Download — SKIPPED (enabled: false)")
+            logger.info("[Step 3/5] Download — SKIPPED (enabled: false)")
             summary["download"] = {"status": "skipped"}
         else:
-            logger.info("[Step 3/4] Sentinel-2 image download")
+            logger.info("[Step 3/5] Sentinel-2 image download")
             if dry_run:
                 summary["download"] = {"status": "dry_run"}
             else:
@@ -1008,10 +1046,10 @@ tiles: {}
                     summary["download"] = {"status": "error", "error": str(exc)}
 
         if not self.acolite.enabled:
-            logger.info("[Step 4/4] ACOLITE — SKIPPED (enabled: false)")
+            logger.info("[Step 4/5] ACOLITE — SKIPPED (enabled: false)")
             summary["acolite"] = {"status": "skipped"}
         else:
-            logger.info("[Step 4/4] ACOLITE atmospheric correction")
+            logger.info("[Step 4/5] ACOLITE atmospheric correction")
             if dry_run:
                 summary["acolite"] = {"status": "dry_run"}
             else:
@@ -1020,6 +1058,20 @@ tiles: {}
                 except Exception as exc:
                     logger.error(f"  ACOLITE step failed: {exc}")
                     summary["acolite"] = {"status": "error", "error": str(exc)}
+
+        if not self.acolite.datacube.enabled:
+            logger.info("[Step 5/5] L2W datacube — SKIPPED (enabled: false)")
+            summary["datacube"] = {"status": "skipped"}
+        else:
+            logger.info("[Step 5/5] L2W product datacube")
+            if dry_run:
+                summary["datacube"] = {"status": "dry_run"}
+            else:
+                try:
+                    summary["datacube"] = self._run_l2w_datacube()
+                except Exception as exc:
+                    logger.error(f"  L2W datacube step failed: {exc}")
+                    summary["datacube"] = {"status": "error", "error": str(exc)}
 
         logger.info(f"=== Pipeline complete: {self.campaign_name} ===")
         return summary
@@ -1103,14 +1155,14 @@ tiles: {}
         )
         return {"status": "ok"}
 
-    def _run_acolite(self) -> list[dict]:
+    def _run_acolite(self) -> dict:
         safe_dir = Path(self.acolite.io.safe_dir)
         scl_dir = Path(self.acolite.io.scl_dir)
 
         safe_list = sorted(safe_dir.rglob("*.SAFE"))
         if not safe_list:
             logger.warning(f"  No .SAFE folders found in {safe_dir}")
-            return []
+            return {"status": "ok", "n_scenes": 0, "scenes": []}
 
         cfg = self.to_acolite_config()
         results = cfg.run_batch(
@@ -1123,7 +1175,170 @@ tiles: {}
             tile_config=self.to_tile_config(),
             skip_existing=self.acolite.skip_existing,
         )
-        return results
+
+        n_ok = sum(1 for r in results if r.get("returncode") == 0)
+        n_err = sum(1 for r in results if r.get("returncode") not in (0, None))
+        n_skip = sum(
+            1 for r in results if r.get("skipped") or r.get("skipped_existing")
+        )
+
+        acolite_result = {
+            "status": "ok",
+            "n_scenes": len(safe_list),
+            "n_success": n_ok,
+            "n_error": n_err,
+            "n_skipped": n_skip,
+            "scenes": results,
+        }
+
+        # --- Sub-step 4b: water polygon datacube ---
+        if self.acolite.scl.build_polygon_datacube:
+            logger.info("  [Sub-step 4b] Building water polygon datacube...")
+            polygon_result = self._run_polygon_datacube()
+            acolite_result["polygon_datacube"] = polygon_result
+        else:
+            logger.info(
+                "  [Sub-step 4b] Water polygon datacube — SKIPPED "
+                "(build_polygon_datacube: false)"
+            )
+            acolite_result["polygon_datacube"] = {"status": "skipped"}
+
+        return acolite_result
+
+    def _run_polygon_datacube(self) -> dict:
+        """
+        Build (or update) the water polygon GeoPackage datacube from all
+        SCL GeoTIFF files found in ``scl_dir``.
+
+        Records are built automatically by globbing ``{scl_dir}/*_SCL.tif``.
+        The same ``min_area_m2``, ``simplify_tolerance``, and ``buffer_m``
+        values from ``acolite.scl`` are reused — no duplication in YAML.
+
+        Returns a status dict with keys ``status``, ``output_path``,
+        ``n_records``.
+        """
+
+        scl_dir = Path(self.acolite.io.scl_dir)
+        scl_files = sorted(scl_dir.glob("*_SCL.tif"))
+
+        if not scl_files:
+            logger.warning(
+                f"  No SCL files found in {scl_dir} — "
+                "water polygon datacube not built."
+            )
+            return {"status": "skipped", "reason": f"No SCL files in {scl_dir}"}
+
+        records = [{"scl_path": str(f)} for f in scl_files]
+        output_path = Path(self.acolite.scl.polygon_datacube_path)
+
+        logger.info(
+            f"  Building water polygon datacube from {len(records)} SCL files "
+            f"→ {output_path}"
+        )
+
+        gpkg_path = build_water_polygon_datacube(
+            records=records,
+            output_path=output_path,
+            overwrite=self.acolite.scl.polygon_datacube_overwrite,
+            min_area_m2=self.acolite.scl.min_area_m2,
+            simplify_tolerance=self.acolite.scl.simplify_tolerance,
+            buffer_m=self.acolite.scl.buffer_m,
+        )
+
+        logger.info(f"  Water polygon datacube written: {gpkg_path}")
+        return {
+            "status": "ok",
+            "output_path": str(gpkg_path),
+            "n_records": len(records),
+        }
+
+    def _run_l2w_datacube(self) -> dict:
+        """
+        Aggregate all ``*_L2W.nc`` files found under ``acolite.io.output``
+        into a single Zarr datacube using
+        :func:`~aquamatch.acolite_spec.append_l2w_to_datacube`.
+
+        Each L2W file is appended in chronological order (by acquisition date
+        parsed from the filename).  If a date already exists in the datacube
+        and ``overwrite_date=False``, that file is skipped with a warning.
+
+        ``variables`` controls which L2W parameters are written.  ``None``
+        means all variables present in each file.  A warning is emitted for
+        any listed variable absent from a particular file; processing continues
+        for the variables that are present.
+
+        Returns a status dict with keys ``status``, ``output_path``,
+        ``n_processed``, ``n_skipped``, ``n_error``.
+        """
+
+        output_dir = Path(self.acolite.io.output)
+        l2w_files = sorted(output_dir.rglob("*_L2W.nc"))
+
+        if not l2w_files:
+            logger.warning(
+                f"  No L2W NetCDF files found under {output_dir} — "
+                "datacube not built."
+            )
+            return {
+                "status": "skipped",
+                "reason": f"No *_L2W.nc files under {output_dir}",
+            }
+
+        dc = self.acolite.datacube
+        output_path = Path(dc.output_path)
+        variables = dc.variables  # None or list[str]
+
+        # Warn about any user-requested variables not seen across all files
+        # (we do this lazily per-file inside the loop below)
+        logger.info(
+            f"  Building L2W datacube from {len(l2w_files)} files → {output_path}"
+        )
+        if variables:
+            logger.info(f"  Requested variables: {variables}")
+
+        stats = {"n_processed": 0, "n_skipped": 0, "n_error": 0}
+
+        for l2w_nc in l2w_files:
+            try:
+                # Warn if any requested variable is missing from this file
+                if variables:
+                    import xarray as xr
+
+                    with xr.open_dataset(l2w_nc) as ds:
+                        missing = [v for v in variables if v not in ds.data_vars]
+                    if missing:
+                        logger.warning(
+                            f"  {l2w_nc.name}: requested variable(s) not found "
+                            f"and will be skipped: {missing}"
+                        )
+
+                append_l2w_to_datacube(
+                    l2w_nc=l2w_nc,
+                    datacube_path=output_path,
+                    target_crs=dc.target_crs,
+                    target_resolution=dc.target_resolution,
+                    variables=variables,
+                    zarr_chunks=dc.zarr_chunks,
+                    overwrite_date=dc.overwrite_date,
+                )
+                stats["n_processed"] += 1
+                logger.info(f"  Appended: {l2w_nc.name}")
+
+            except Exception as exc:
+                logger.error(f"  Error appending {l2w_nc.name}: {exc}")
+                stats["n_error"] += 1
+
+        logger.info(
+            f"  L2W datacube complete — "
+            f"processed: {stats['n_processed']}, "
+            f"errors: {stats['n_error']}"
+        )
+
+        return {
+            "status": "ok",
+            "output_path": str(output_path),
+            **stats,
+        }
 
 
 # ---------------------------------------------------------------------------
