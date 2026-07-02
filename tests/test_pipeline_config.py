@@ -875,7 +875,9 @@ class TestRunAcoliteTileConfigWiring:
         safe_dir.mkdir()
         pipeline = self._make_pipeline_cfg(tmp_path)
         result = pipeline._run_acolite()
-        assert result == []
+        assert result["status"] == "ok"
+        assert result["n_scenes"] == 0
+        assert result["scenes"] == []
 
 
 # ---------------------------------------------------------------------------

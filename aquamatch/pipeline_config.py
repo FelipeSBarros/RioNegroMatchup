@@ -29,6 +29,7 @@ import logging
 from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 from typing import Any, Optional
+
 from aquamatch.scl_water import build_water_polygon_datacube
 from aquamatch.acolite_spec import append_l2w_to_datacube
 
@@ -1162,36 +1163,38 @@ tiles: {}
         safe_list = sorted(safe_dir.rglob("*.SAFE"))
         if not safe_list:
             logger.warning(f"  No .SAFE folders found in {safe_dir}")
-            return {"status": "ok", "n_scenes": 0, "scenes": []}
+            acolite_result = {"status": "ok", "n_scenes": 0, "scenes": []}
+        else:
+            cfg = self.to_acolite_config()
+            results = cfg.run_batch(
+                safe_list=safe_list,
+                base_output=self.acolite.io.output,
+                use_scl=self.acolite.scl.use_scl,
+                scl_dir=scl_dir if self.acolite.scl.use_scl else None,
+                scl_kwargs=self.to_scl_kwargs(),
+                continue_on_error=self.acolite.continue_on_error,
+                tile_config=self.to_tile_config(),
+                skip_existing=self.acolite.skip_existing,
+            )
 
-        cfg = self.to_acolite_config()
-        results = cfg.run_batch(
-            safe_list=safe_list,
-            base_output=self.acolite.io.output,
-            use_scl=self.acolite.scl.use_scl,
-            scl_dir=scl_dir if self.acolite.scl.use_scl else None,
-            scl_kwargs=self.to_scl_kwargs(),
-            continue_on_error=self.acolite.continue_on_error,
-            tile_config=self.to_tile_config(),
-            skip_existing=self.acolite.skip_existing,
-        )
+            n_ok = sum(1 for r in results if r.get("returncode") == 0)
+            n_err = sum(1 for r in results if r.get("returncode") not in (0, None))
+            n_skip = sum(
+                1 for r in results if r.get("skipped") or r.get("skipped_existing")
+            )
 
-        n_ok = sum(1 for r in results if r.get("returncode") == 0)
-        n_err = sum(1 for r in results if r.get("returncode") not in (0, None))
-        n_skip = sum(
-            1 for r in results if r.get("skipped") or r.get("skipped_existing")
-        )
-
-        acolite_result = {
-            "status": "ok",
-            "n_scenes": len(safe_list),
-            "n_success": n_ok,
-            "n_error": n_err,
-            "n_skipped": n_skip,
-            "scenes": results,
-        }
+            acolite_result = {
+                "status": "ok",
+                "n_scenes": len(safe_list),
+                "n_success": n_ok,
+                "n_error": n_err,
+                "n_skipped": n_skip,
+                "scenes": results,
+            }
 
         # --- Sub-step 4b: water polygon datacube ---
+        # Runs regardless of whether SAFE files were found — the datacube
+        # may already contain scenes from previous runs.
         if self.acolite.scl.build_polygon_datacube:
             logger.info("  [Sub-step 4b] Building water polygon datacube...")
             polygon_result = self._run_polygon_datacube()
@@ -1217,7 +1220,6 @@ tiles: {}
         Returns a status dict with keys ``status``, ``output_path``,
         ``n_records``.
         """
-
         scl_dir = Path(self.acolite.io.scl_dir)
         scl_files = sorted(scl_dir.glob("*_SCL.tif"))
 
@@ -1270,7 +1272,6 @@ tiles: {}
         Returns a status dict with keys ``status``, ``output_path``,
         ``n_processed``, ``n_skipped``, ``n_error``.
         """
-
         output_dir = Path(self.acolite.io.output)
         l2w_files = sorted(output_dir.rglob("*_L2W.nc"))
 
