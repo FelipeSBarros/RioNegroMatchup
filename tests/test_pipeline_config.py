@@ -500,6 +500,16 @@ class TestToAcoliteConfig:
         assert cfg.glint.glint_correction is True
         assert cfg.l2w.output_rhorc is False
 
+    def test_datacube_not_mapped_to_acolite_config(self):
+        """
+        AcoliteSection.datacube (DatacubeSection) has no counterpart in
+        AcoliteConfig by design: the L2W datacube step runs after ACOLITE
+        finishes and is not an ACOLITE processing setting. to_acolite_config()
+        must not attach a `datacube` attribute to the resulting AcoliteConfig.
+        """
+        cfg = self._pipeline_cfg().to_acolite_config()
+        assert not hasattr(cfg, "datacube")
+
 
 # ===========================================================================
 # Pipeline config section dataclasses

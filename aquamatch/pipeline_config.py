@@ -940,7 +940,13 @@ tiles: {}
                 a.reproject.output_projection_resampling_method
             ),
         )
-
+        # NOTE: AcoliteSection.datacube (DatacubeSection) is intentionally NOT
+        # mapped here. It has no counterpart in AcoliteConfig by design: the
+        # L2W datacube step runs *after* ACOLITE finishes, aggregating the
+        # *_L2W.nc files ACOLITE produces — it is not an ACOLITE processing
+        # setting itself. See PipelineConfig._run_l2w_datacube() and
+        # aquamatch.acolite_spec.append_l2w_to_datacube(). Do not add a
+        # `datacube=` kwarg to AcoliteConfig() below.
         cfg = AcoliteConfig(
             acolite_executable=a.acolite_executable,
             io=io,
