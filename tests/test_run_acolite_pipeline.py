@@ -339,6 +339,161 @@ class TestRunAcolitePipelinePolygonDatacubeEnabledWithFiles:
 
         assert captured["output_path"] == Path(SclSection().polygon_datacube_path)
 
+
+class TestRunAcolitePipelinePolygonDatacubeFailurePropagation:
+    """A6 — a failure inside the datacube step surfaces as status='error'
+    on the whole run_acolite_pipeline() result, same severity as an
+    ACOLITE sub-config validation failure. Confirmed design decision:
+    the datacube call is intentionally left uncaught locally."""
+
+    def _make_scl_files(self, scl_dir: Path, n: int = 1) -> None:
+        scl_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(n):
+            (scl_dir / f"scene{i}_SCL.tif").write_bytes(b"fake")
+
+    def test_datacube_exception_sets_status_error(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=ValueError("no water pixels found"),
+        ):
+            result = run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+            )
+
+        assert result["status"] == "error"
+
+    def test_error_message_surfaces_from_datacube_failure(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=ValueError("no water pixels found"),
+        ):
+            result = run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+            )
+
+        assert "no water pixels found" in result["error"]
+
+    def test_error_result_has_empty_outputs(self, tmp_path):
+        """Consistent with other fatal-error paths (e.g. missing executable):
+        outputs is emptied entirely, not partially populated."""
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=RuntimeError("disk full"),
+        ):
+            result = run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+            )
+
+        assert result["outputs"] == {}
+
+    def test_elapsed_seconds_still_present_on_datacube_failure(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=RuntimeError("disk full"),
+        ):
+            result = run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+            )
+
+        assert isinstance(result["elapsed_seconds"], float)
+        assert result["elapsed_seconds"] >= 0.0
+
+    def test_acolite_scenes_still_succeeded_before_datacube_failure(self, tmp_path):
+        """The ACOLITE run_batch results themselves were fine — only the
+        post-processing datacube step failed. Confirms run_batch was
+        allowed to complete without raising before the datacube step runs."""
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()  # no .SAFE folders — run_batch trivially succeeds
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=ValueError("boom"),
+        ) as mock_build:
+            run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+            )
+
+        mock_build.assert_called_once()
+
+    def test_no_failure_when_build_polygon_datacube_false(self, tmp_path):
+        """Sanity check: the patched exception must never fire when the
+        datacube step is disabled — status stays 'success'."""
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=ValueError("should never be called"),
+        ) as mock_build:
+            result = run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=False,
+            )
+
+        mock_build.assert_not_called()
+        assert result["status"] == "success"
+
+
+class TestRunAcolitePipelinePolygonDatacubeEnabledEmpty:
     """A4 — build_polygon_datacube=True but scl_dir has no *_SCL.tif files."""
 
     def test_skipped_when_scl_dir_empty(self, tmp_path):
