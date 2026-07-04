@@ -1235,6 +1235,29 @@ def run_acolite_pipeline(
         )
         n_error = sum(1 for r in results if r.get("returncode") not in (0, None))
 
+        # --- Water polygon datacube (optional) ---
+        # Runs regardless of whether SAFE files were found — the datacube
+        # may already contain scenes from previous runs. Mirrors
+        # PipelineConfig._run_acolite()'s sub-step 4b via the shared
+        # _run_polygon_datacube_step() helper (see Gap A / A1). Any
+        # exception raised here is intentionally left uncaught so it
+        # propagates to the except block below and the whole call reports
+        # status="error" — the same severity as an ACOLITE sub-config
+        # validation failure.
+        if _build_polygon_datacube:
+            logger.info("Building water polygon datacube...")
+            polygon_datacube_result = _run_polygon_datacube_step(
+                scl_dir=scl_dir_path,
+                output_path=_polygon_datacube_path,
+                overwrite=_polygon_datacube_overwrite,
+                scl_kwargs=_scl_kwargs,
+            )
+        else:
+            polygon_datacube_result = {
+                "status": "skipped",
+                "reason": "build_polygon_datacube=False",
+            }
+
         return {
             "step": "acolite",
             "status": "success",
@@ -1246,6 +1269,7 @@ def run_acolite_pipeline(
                 "n_skipped": n_skipped,
                 "n_error": n_error,
                 "scenes": results,
+                "polygon_datacube": polygon_datacube_result,
             },
             "error": None,
             "elapsed_seconds": round(time.monotonic() - t0, 2),
