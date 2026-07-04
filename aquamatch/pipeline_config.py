@@ -2,24 +2,6 @@
 pipeline_config.py
 ==================
 YAML-driven pipeline configuration for the aquamatch workflow.
-
-A single YAML file drives the entire pipeline — one file per campaign,
-version-controlled, self-documenting.
-
-Usage
------
-Generate a template::
-
-    python -m aquamatch.pipeline_config --generate campaign_2025.yaml
-
-Run the full pipeline::
-
-    python -m aquamatch.pipeline_config --run campaign_2025.yaml
-
-Programmatic usage::
-
-    cfg = PipelineConfig.from_yaml("campaign_2025.yaml")
-    cfg.run()
 """
 
 from __future__ import annotations
@@ -30,17 +12,11 @@ from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from aquamatch.scl_water import build_water_polygon_datacube
 from aquamatch.acolite_spec import append_l2w_to_datacube
 
 logger = logging.getLogger(__name__)
 
-# Valid values for DownloadSection.strategy — validated at load time.
 VALID_DOWNLOAD_STRATEGIES = {"best", "all", "same_day", "previous", "posterior"}
-
-# ---------------------------------------------------------------------------
-# Section dataclasses
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -79,7 +55,6 @@ class SclSection:
     min_area_m2: float = 5_000.0
     simplify_tolerance: float = 20.0
     buffer_m: float = 0.0
-    # --- Water polygon datacube ---
     build_polygon_datacube: bool = False
     polygon_datacube_path: str = "data/water_polygons.gpkg"
     polygon_datacube_overwrite: bool = False
@@ -90,7 +65,7 @@ class AcoliteIOSection:
     output: str = "data/acolite_output"
     safe_dir: str = "data/sentinel_downloads"
     scl_dir: str = "data/sentinel_downloads/scl"
-    limit: Optional[list[float]] = None  # [S, W, N, E]
+    limit: Optional[list[float]] = None
 
 
 @dataclass
@@ -136,7 +111,6 @@ class AcoliteL2WSection:
     l2w_mask_water_expr: Optional[str] = "rhos_1600 < 0.0215"
     output_rhorc: bool = False
     output_rhos: bool = True
-    # Extended masking detail (new)
     l2w_mask_wave: int = 1600
     l2w_mask_threshold: float = 0.0215
     l2w_mask_cirrus_threshold: float = 0.005
@@ -153,150 +127,56 @@ class AcoliteOutputSection:
     netcdf_compression_level: int = 4
     map_rgb: bool = False
     map_rgb_maxrange: float = 0.15
-    # Extended output content (new)
     output_xy: bool = False
     output_geometry: bool = True
     l2w_export_geotiff: bool = False
     copy_datasets: str = "lon,lat,rhot_*"
 
 
-# ---------------------------------------------------------------------------
-# New pipeline config sections (Step B)
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class AcoliteS2Section:
-    """
-    Sentinel-2 specific processing options.
-
-    Controls target resolution, tile merging, per-pixel geometry, and
-    blackfill handling.  All defaults match ACOLITE's own defaults for S2.
-    """
-
     s2_target_res: int = 10
-    """Target output resolution in metres.  One of 10, 20, or 60."""
-
     merge_tiles: bool = False
-    """Merge adjacent SAFE tiles before processing."""
-
     merge_full_tiles: bool = False
-    """Merge full (non-cropped) tiles."""
-
     extend_region: bool = False
-    """Extend the cropped region to cover the full tile extent."""
-
     geometry_type: str = "grids_footprint"
-    """Per-pixel geometry computation method."""
-
     geometry_res: int = 60
-    """Resolution (m) at which geometry grids are computed."""
-
     blackfill_skip: bool = True
-    """Skip scenes where the blackfill fraction exceeds ``blackfill_max``."""
-
     blackfill_max: float = 1.0
-    """Maximum allowed blackfill fraction (0–1)."""
-
     blackfill_wave: int = 1600
-    """Band (nm) used to detect blackfill pixels."""
 
 
 @dataclass
 class AcoliteDsfSection:
-    """
-    Dark Spectrum Fitting (DSF) fine-tuning.
-
-    Most users should leave these at their defaults.  Adjust when
-    processing very turbid water, small lakes, or scenes with bright
-    non-water targets that confuse the standard dark-pixel retrieval.
-    """
-
     dsf_aot_estimate: str = "tiled"
-    """AOT estimation mode.  One of ``tiled``, ``fixed``, ``fixed_band``."""
-
     dsf_spectrum_option: str = "intercept"
-    """Dark-spectrum selection.  One of ``intercept``, ``darkest``, ``percentile``."""
-
     dsf_nbands: int = 2
-    """Number of bands used for AOT retrieval."""
-
     dsf_nbands_fit: int = 2
-    """Number of bands used for the spectral fit."""
-
     dsf_filter_rhot: bool = False
-    """Apply a percentile filter to TOA reflectance before DSF."""
-
     dsf_filter_percentile: int = 50
-    """Percentile used when ``dsf_filter_rhot=True``."""
-
     dsf_smooth_aot: bool = False
-    """Spatially smooth the retrieved AOT field."""
-
     dsf_fixed_aot: Optional[float] = None
-    """Override AOT retrieval with a fixed value.  ``None`` = retrieve."""
-
     dsf_aot_most_common_model: bool = True
-    """Use the most-common atmospheric model across tiles."""
-
     dsf_allow_lut_boundaries: bool = False
-    """Allow AOT to reach the edges of the LUT."""
-
     dsf_min_tile_aot: float = 0.01
-    """Minimum acceptable tile AOT."""
-
     dsf_max_tile_aot: float = 1.20
-    """Maximum acceptable tile AOT."""
 
 
 @dataclass
 class AcoliteReprojectSection:
-    """
-    Optional output reprojection.
-
-    Disabled by default.  Enable to reproject all ACOLITE outputs to a
-    common projected CRS — useful for direct comparison with in situ
-    station coordinates and for consistent spatial analysis.
-    """
-
     reproject_outputs: bool = False
-    """Set ``True`` to enable reprojection of all output files."""
-
     output_projection_epsg: Optional[int] = None
-    """Target EPSG code (e.g. 32721 for UTM zone 21S)."""
-
     output_projection_resolution: Optional[float] = None
-    """Target pixel size in metres.  ``None`` = native sensor resolution."""
-
     output_projection_resampling_method: str = "bilinear"
-    """Resampling algorithm.  One of ``nearest``, ``bilinear``, ``cubic``."""
 
 
 @dataclass
 class DatacubeSection:
-    """
-    L2W product datacube configuration.
-
-    Controls the aggregation of per-scene ACOLITE L2W NetCDF files into a
-    single Zarr datacube using :func:`~aquamatch.acolite_spec.append_l2w_to_datacube`.
-
-    Disabled by default (``enabled: false``) because it requires the optional
-    ``xarray``, ``rioxarray``, and ``zarr`` dependencies and can produce large
-    output files.  Enable explicitly once ACOLITE processing is complete.
-
-    ``variables`` controls which L2W parameters are written to the datacube.
-    Set to ``null`` to include every variable present in each L2W file, or
-    list specific parameter names (e.g. ``[t_nechad, spm_nechad, ndwi]``) to
-    restrict the datacube to a subset.  A warning is emitted for any listed
-    variable that is absent from a particular L2W file — the file is still
-    processed for the variables that are present.
-    """
-
     enabled: bool = False
     output_path: str = "data/l2w_datacube.zarr"
-    variables: Optional[list[str]] = None  # None = all variables in each L2W file
+    variables: Optional[list[str]] = None
     target_crs: str = "EPSG:4326"
-    target_resolution: float = 0.0001  # degrees (~10 m at equator)
+    target_resolution: float = 0.0001
     overwrite_date: bool = False
     zarr_chunks: dict = field(default_factory=lambda: {"time": 1, "y": 512, "x": 512})
 
@@ -314,26 +194,14 @@ class AcoliteSection:
     l2w: AcoliteL2WSection = field(default_factory=AcoliteL2WSection)
     output_format: AcoliteOutputSection = field(default_factory=AcoliteOutputSection)
     scl: SclSection = field(default_factory=SclSection)
-    # New sub-sections
     s2: AcoliteS2Section = field(default_factory=AcoliteS2Section)
     dsf: AcoliteDsfSection = field(default_factory=AcoliteDsfSection)
     reproject: AcoliteReprojectSection = field(default_factory=AcoliteReprojectSection)
     datacube: DatacubeSection = field(default_factory=DatacubeSection)
 
 
-# ---------------------------------------------------------------------------
-# Tile configuration
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class TileEntry:
-    """
-    Spatial restriction for a single Sentinel-2 MGRS tile.
-
-    Exactly one of ``polygon`` or ``limit`` may be set.
-    """
-
     polygon: Optional[str] = None
     limit: Optional[list[float]] = None
 
@@ -372,8 +240,6 @@ class TileEntry:
 
 @dataclass
 class TilesSection:
-    """Per-tile spatial restrictions, keyed by 5-character MGRS tile code."""
-
     entries: dict[str, TileEntry] = field(default_factory=dict)
 
     def get(self, tile_id: str) -> Optional[TileEntry]:
@@ -410,11 +276,6 @@ class TilesSection:
         return cls(entries=entries)
 
 
-# ---------------------------------------------------------------------------
-# Master config
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class PipelineConfig:
     """Master pipeline configuration for aquamatch."""
@@ -428,13 +289,8 @@ class PipelineConfig:
     acolite: AcoliteSection = field(default_factory=AcoliteSection)
     tiles: TilesSection = field(default_factory=TilesSection)
 
-    # ---------------------------------------------------------------------------
-    # Template generation
-    # ---------------------------------------------------------------------------
-
     @classmethod
     def generate(cls, output_path: Path | str) -> Path:
-        """Write a fully-commented YAML template to *output_path*."""
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -452,21 +308,19 @@ class PipelineConfig:
 #     python -m aquamatch.pipeline_config --run campaign_2025.yaml
 # =============================================================================
 
-campaign_name: rio_negro_2025       # Identifier for this campaign run
+campaign_name: rio_negro_2025
 description: "Sentinel-2 / in situ water quality matchup"
 
 # =============================================================================
 # Step 1 — In situ data preparation
 # =============================================================================
+
 insitu:
   enabled: true
-
   stations_path: data/original_data/estaciones-seleccionadas.xlsx
   campaigns_path: data/original_data/campaigns_sample.xlsx
-
   output_campaigns_csv: data/monitoring_data/campaigns_organized.csv
   output_unique_csv: data/monitoring_data/campaigns_unique_data.csv
-
   skip_clean: false
 
 # =============================================================================
@@ -474,10 +328,8 @@ insitu:
 # =============================================================================
 sentinel:
   enabled: true
-
   catalog_json: data/sentinel_downloads/sentinel_catalog.json
   csv: data/monitoring_data/campaigns_unique_data.csv
-
   time_delta: 1
   cloud_cover: 10
 
@@ -486,55 +338,87 @@ sentinel:
 # =============================================================================
 download:
   enabled: true
-
   output_dir: data/sentinel_downloads
   catalog_json: data/sentinel_downloads/sentinel_catalog.json
-
-  # best | same_day | previous | posterior | all
+  
+  # Download selection strategy. Controls which scenes are downloaded per
+  # field date from the bucketed catalog (same_day / previous / posterior).
+  #
+  # best      — prefer same_day, fall back to previous then posterior.
+  #             Picks up to max_per_date scenes filling quota in that order.
+  # same_day  — only download scenes acquired on the exact field date.
+  # previous  — prefer same_day, fall back to previous acquisitions only.
+  # posterior — prefer same_day, fall back to posterior acquisitions only.
+  # all       — download every scene found across all buckets.
   strategy: best
+  
+  # Maximum number of scenes to download per field date.
+  # Ignored when strategy is "all".
   max_per_date: 1
+  
+  # Optional secondary cloud cover ceiling applied at download time,
+  # independently of the search ceiling (sentinel.cloud_cover).
+  # Set to null to apply no additional filter.
   max_cloud_cover: null
-  download_scl: true
+  download_scl: true                # Also download SCL asset (recommended)
 
 # =============================================================================
 # Step 4 — Atmospheric correction (ACOLITE)
 # =============================================================================
 acolite:
   enabled: true
-
+    # Path to the ACOLITE executable (acolite.py or the compiled binary)
   acolite_executable: /path/to/acolite/acolite.py
 
+  # low_memory: true reduces RAM usage at the cost of processing speed.
+  # Recommended when processing large tiles on machines with < 16 GB RAM.
   low_memory: false
-  continue_on_error: true
-  skip_existing: true
+
+  continue_on_error: true           # Keep processing remaining scenes on failure
+  skip_existing: true               # Skip scenes whose output files already exist;
 
   # --- Input / Output ---
   io:
-    output: data/acolite_output
-    safe_dir: data/sentinel_downloads
-    scl_dir: data/sentinel_downloads/scl
+    output: data/acolite_output     # Root output directory for ACOLITE products
+    safe_dir: data/sentinel_downloads   # Directory containing .SAFE folders
+    scl_dir: data/sentinel_downloads/scl  # Directory containing SCL GeoTIFFs
 
   # --- Radiometric correction ---
   radcor:
-    aerosol_correction: dsf         # dsf | exp | tact
-    dsf_path_reflectance: tiled     # tiled | fixed | percentile
+    # Atmospheric correction processor: dsf | exp | tact
+    aerosol_correction: dsf
+
+    # DSF path reflectance method: tiled | fixed | percentile
+    dsf_path_reflectance: tiled
+
+    # DSF tile dimensions [rows, cols] in pixels
     dsf_tile_dimensions: [120, 120]
+
+    # Minimum fraction of valid pixels required per DSF tile (0.0–1.0)
     dsf_minimum_tile_cover: 0.10
+
+    # Use ECMWF ancillary data for atmospheric parameters (recommended)
     ancillary_data: true
-    uoz: 0.3
-    uwv: 1.5
-    pressure: 1013.25
+
+    # Fallback values used when ancillary_data is false
+    uoz: 0.3                        # Ozone column (cm-atm)
+    uwv: 1.5                        # Water vapour column (g/cm²)
+    pressure: 1013.25               # Sea-level pressure (hPa)
 
   # --- Sunglint correction ---
   glint:
     glint_correction: true
-    glint_method: vanhellemont2019  # none | hedley | vanhellemont2019
-    glint_threshold: 0.01
-    glint_mask_rhos: true
-    glint_mask_rhos_threshold: 0.15
+    # Glint correction method: none | hedley | vanhellemont2019
+    glint_method: vanhellemont2019
+
+    glint_threshold: 0.01           # Minimum glint reflectance to correct
+    glint_mask_rhos: true           # Mask pixels above threshold
+    glint_mask_rhos_threshold: 0.15 # Masking threshold (dimensionless)
 
   # --- L2W water quality products ---
   l2w:
+    # Parameters to compute. Available: t_nechad, spm_nechad, chl_oc3,
+    # chl_re, aphy_443, fai, ndwi, ndvi, and others supported by ACOLITE.
     l2w_parameters:
       - t_nechad
       - spm_nechad
@@ -544,133 +428,82 @@ acolite:
       - fai
       - ndwi
       - ndvi
-
     l2w_mask: true
     l2w_mask_negative_rhos: true
     l2w_mask_cirrus: true
     l2w_mask_high_toa: true
     l2w_mask_high_toa_threshold: 0.3
+    # Water expression for masking land. Set null to disable.
     l2w_mask_water_expr: "rhos_1600 < 0.0215"
-    output_rhorc: false
-    output_rhos: true
+    l2w_mask_wave: 1600
+    l2w_mask_threshold: 0.0215
+    l2w_mask_cirrus_threshold: 0.005
+    l2w_mask_smooth: true
+    l2w_mask_smooth_sigma: 3
+    
+    output_rhorc: false             # Output Rayleigh-corrected reflectance
+    output_rhos: true               # Output surface reflectance
 
-    # Extended masking — adjust to tune mask sensitivity
-    l2w_mask_wave: 1600              # Band (nm) used as the water mask reference
-    l2w_mask_threshold: 0.0215       # Reflectance threshold for the water mask
-    l2w_mask_cirrus_threshold: 0.005 # Cirrus detection threshold
-    l2w_mask_smooth: true            # Smooth mask to reduce speckle
-    l2w_mask_smooth_sigma: 3         # Gaussian sigma for mask smoothing (pixels)
-
-  # --- Output formats ---
   output_format:
     export_geotiff: true
     export_geotiff_coordinates: true
     export_cloud_optimized_geotiff: false
     netcdf_compression: true
-    netcdf_compression_level: 4     # 1 (fast) – 9 (small)
+    netcdf_compression_level: 4    # 1 (fast) – 9 (small); recommended: 4–6
     map_rgb: false
     map_rgb_maxrange: 0.15
+    output_xy: false
+    output_geometry: true
+    l2w_export_geotiff: false
+    copy_datasets: "lon,lat,rhot_*"
 
-    # Extended output content
-    output_xy: false                 # Include x/y pixel coordinate arrays
-    output_geometry: true            # Include sun/view geometry bands
-    l2w_export_geotiff: false        # Also export L2W products as GeoTIFF
-    copy_datasets: "lon,lat,rhot_*"  # Datasets copied from L1R to L2R
-
-  # --- SCL-based water polygon clipping ---
   scl:
-    use_scl: true
-    min_area_m2: 5000.0
-    simplify_tolerance: 20.0
-    buffer_m: 0.0
-
-    # --- Water polygon datacube ---
-    # When build_polygon_datacube is true, all SCL files in scl_dir are
-    # processed after ACOLITE runs and aggregated into a single GeoPackage.
-    # The same min_area_m2, simplify_tolerance, and buffer_m values above
-    # are reused — no duplication needed.
+    use_scl: true                   # Extract water mask from SCL and clip
+    min_area_m2: 5000.0             # Minimum water polygon area (m²)
+    simplify_tolerance: 20.0        # Douglas-Peucker tolerance (m, ~1 pixel)
+    buffer_m: 0.0                   # Outward buffer around water mask (m)
     build_polygon_datacube: false
     polygon_datacube_path: data/water_polygons.gpkg
-    polygon_datacube_overwrite: false   # true = rebuild from scratch each run
+    polygon_datacube_overwrite: false
 
-  # ---------------------------------------------------------------------------
-  # Sentinel-2 specific options
-  # ---------------------------------------------------------------------------
   s2:
-    # Target output resolution in metres. One of: 10, 20, 60.
-    # Use 20 on low-memory machines to halve data volume.
     s2_target_res: 10
-
-    # Merge adjacent SAFE tiles before processing.
-    # Useful for water bodies that span a tile boundary.
     merge_tiles: false
     merge_full_tiles: false
-
-    # Extend the ROI to cover the full tile (not just the cropped limit).
     extend_region: false
-
-    # Per-pixel geometry grids
     geometry_type: grids_footprint
-    geometry_res: 60                 # Resolution (m) for geometry computation
-
-    # Blackfill handling — skip scenes that are mostly empty (no data).
+    geometry_res: 60
     blackfill_skip: true
-    blackfill_max: 1.0               # Max blackfill fraction (0–1); 1.0 = never skip
-    blackfill_wave: 1600             # Band (nm) used to detect blackfill pixels
+    blackfill_max: 1.0
+    blackfill_wave: 1600
 
-  # ---------------------------------------------------------------------------
-  # DSF fine-tuning (advanced)
-  # ---------------------------------------------------------------------------
-  # Most users should leave these at their defaults.
-  # Adjust for very turbid water, small lakes, or scenes with bright
-  # non-water targets that confuse the standard dark-pixel retrieval.
   dsf:
-    dsf_aot_estimate: tiled          # tiled | fixed | fixed_band
-    dsf_spectrum_option: intercept   # intercept | darkest | percentile
-    dsf_nbands: 2                    # Number of bands for AOT retrieval
-    dsf_nbands_fit: 2                # Number of bands for spectral fit
-    dsf_filter_rhot: false           # Apply percentile filter to TOA before DSF
-    dsf_filter_percentile: 50        # Percentile used when dsf_filter_rhot=true
-    dsf_smooth_aot: false            # Spatially smooth the retrieved AOT field
-    dsf_fixed_aot: null              # Set a float (e.g. 0.1) to bypass AOT retrieval
+    dsf_aot_estimate: tiled
+    dsf_spectrum_option: intercept
+    dsf_nbands: 2
+    dsf_nbands_fit: 2
+    dsf_filter_rhot: false
+    dsf_filter_percentile: 50
+    dsf_smooth_aot: false
+    dsf_fixed_aot: null
     dsf_aot_most_common_model: true
     dsf_allow_lut_boundaries: false
     dsf_min_tile_aot: 0.01
     dsf_max_tile_aot: 1.20
 
-  # ---------------------------------------------------------------------------
-  # Output reprojection (optional)
-  # ---------------------------------------------------------------------------
-  # Disabled by default. Enable to reproject all outputs (L1R, L2R, L2W)
-  # to a common projected CRS, useful for direct comparison with in situ
-  # station coordinates and for consistent downstream spatial analysis.
   reproject:
     reproject_outputs: false
-    output_projection_epsg: null     # e.g. 32721 for UTM zone 21S (Uruguay/NE Argentina)
-    output_projection_resolution: null  # Target pixel size in metres (null = native)
-    output_projection_resampling_method: bilinear  # nearest | bilinear | cubic
+    output_projection_epsg: null
+    output_projection_resolution: null
+    output_projection_resampling_method: bilinear
 
-  # ---------------------------------------------------------------------------
-  # L2W product datacube (Step 5)
-  # ---------------------------------------------------------------------------
-  # Aggregates all *_L2W.nc files produced by ACOLITE into a single Zarr
-  # datacube using append_l2w_to_datacube().
-  #
-  # Disabled by default (enabled: false) because it requires xarray,
-  # rioxarray, and zarr.  Enable once ACOLITE processing is complete.
-  #
-  # variables: which L2W parameters to include.  null = all variables
-  # present in each file.  List specific names to restrict the datacube,
-  # e.g. [t_nechad, spm_nechad, ndwi].  A warning is emitted for any
-  # listed variable absent from a particular file; processing continues
-  # for variables that are present.
   datacube:
     enabled: false
     output_path: data/l2w_datacube.zarr
-    variables: null                  # null = all | e.g. [t_nechad, spm_nechad, ndwi]
+    variables: null
     target_crs: "EPSG:4326"
-    target_resolution: 0.0001        # degrees (~10 m at equator)
-    overwrite_date: false            # true = replace existing dates in datacube
+    target_resolution: 0.0001
+    overwrite_date: false
     zarr_chunks:
       time: 1
       y: 512
@@ -701,18 +534,8 @@ tiles: {}
         logger.info(f"Pipeline template written to {output_path}")
         return output_path
 
-    # ---------------------------------------------------------------------------
-    # Parsing
-    # ---------------------------------------------------------------------------
-
     @classmethod
     def from_yaml(cls, path: Path | str) -> "PipelineConfig":
-        """
-        Load, parse, and validate a pipeline YAML file.
-
-        Unknown top-level or section keys raise ``ValueError``.
-        Missing keys fall back to dataclass defaults.
-        """
         try:
             import yaml
         except ImportError as exc:
@@ -732,7 +555,6 @@ tiles: {}
 
     @classmethod
     def _from_dict(cls, raw: dict) -> "PipelineConfig":
-        """Parse a raw dict into a PipelineConfig, raising on unknown keys."""
         _check_keys(raw, cls, context="pipeline root")
 
         insitu_raw = raw.get("insitu", {})
@@ -745,7 +567,6 @@ tiles: {}
         _check_keys(sentinel_raw, SentinelSection, context="sentinel")
         _check_keys(download_raw, DownloadSection, context="download")
 
-        # Separate top-level acolite keys from sub-section keys
         _ACOLITE_SUBSECTIONS = {
             "io",
             "radcor",
@@ -785,7 +606,6 @@ tiles: {}
         _check_keys(reproject_raw, AcoliteReprojectSection, context="acolite.reproject")
         _check_keys(datacube_raw, DatacubeSection, context="acolite.datacube")
 
-        # --- Validate download strategy ---
         if "strategy" in download_raw:
             strategy = download_raw["strategy"]
             if strategy not in VALID_DOWNLOAD_STRATEGIES:
@@ -794,7 +614,6 @@ tiles: {}
                     f"Valid values: {sorted(VALID_DOWNLOAD_STRATEGIES)}"
                 )
 
-        # Handle dsf_tile_dimensions: YAML list → list
         if "dsf_tile_dimensions" in radcor_raw:
             val = radcor_raw["dsf_tile_dimensions"]
             radcor_raw = {**radcor_raw, "dsf_tile_dimensions": list(val)}
@@ -824,10 +643,6 @@ tiles: {}
             acolite=acolite,
             tiles=tiles,
         )
-
-    # ---------------------------------------------------------------------------
-    # Converters
-    # ---------------------------------------------------------------------------
 
     def to_acolite_config(self):
         """Convert the acolite section to an ``AcoliteConfig`` instance."""
@@ -941,6 +756,13 @@ tiles: {}
             ),
         )
 
+        # NOTE: AcoliteSection.datacube (DatacubeSection) is intentionally NOT
+        # mapped here. It has no counterpart in AcoliteConfig by design: the
+        # L2W datacube step runs *after* ACOLITE finishes, aggregating the
+        # *_L2W.nc files ACOLITE produces — it is not an ACOLITE processing
+        # setting itself. See PipelineConfig._run_l2w_datacube() and
+        # aquamatch.acolite_spec.append_l2w_to_datacube(). Do not add a
+        # `datacube=` kwarg to AcoliteConfig() below.
         cfg = AcoliteConfig(
             acolite_executable=a.acolite_executable,
             io=io,
@@ -955,11 +777,9 @@ tiles: {}
         return cfg
 
     def to_tile_config(self) -> TilesSection:
-        """Return the ``TilesSection`` for use in ``run_batch``."""
         return self.tiles
 
     def to_scl_kwargs(self) -> dict:
-        """Return keyword arguments for SCL water extraction functions."""
         s = self.acolite.scl
         return {
             "min_area_m2": s.min_area_m2,
@@ -968,7 +788,6 @@ tiles: {}
         }
 
     def to_insitu_args(self) -> dict:
-        """Return arguments for the in situ data pipeline step."""
         s = self.insitu
         return {
             "stations_path": Path(s.stations_path),
@@ -979,7 +798,6 @@ tiles: {}
         }
 
     def to_sentinel_args(self) -> dict:
-        """Return arguments for the Sentinel-2 catalog and download steps."""
         return {
             "csv": Path(self.sentinel.csv),
             "catalog_json": Path(self.sentinel.catalog_json),
@@ -992,12 +810,7 @@ tiles: {}
             "download_scl": self.download.download_scl,
         }
 
-    # ---------------------------------------------------------------------------
-    # Orchestration
-    # ---------------------------------------------------------------------------
-
     def run(self, dry_run: bool = False) -> dict:
-        """Execute the full pipeline in order, respecting ``enabled`` flags."""
         summary: dict[str, Any] = {}
         logger.info(
             f"=== Pipeline: {self.campaign_name} ==="
@@ -1076,10 +889,6 @@ tiles: {}
 
         logger.info(f"=== Pipeline complete: {self.campaign_name} ===")
         return summary
-
-    # ---------------------------------------------------------------------------
-    # Internal step runners
-    # ---------------------------------------------------------------------------
 
     def _run_insitu(self) -> dict:
         from aquamatch.insitu_data import (
@@ -1192,9 +1001,6 @@ tiles: {}
                 "scenes": results,
             }
 
-        # --- Sub-step 4b: water polygon datacube ---
-        # Runs regardless of whether SAFE files were found — the datacube
-        # may already contain scenes from previous runs.
         if self.acolite.scl.build_polygon_datacube:
             logger.info("  [Sub-step 4b] Building water polygon datacube...")
             polygon_result = self._run_polygon_datacube()
@@ -1213,65 +1019,21 @@ tiles: {}
         Build (or update) the water polygon GeoPackage datacube from all
         SCL GeoTIFF files found in ``scl_dir``.
 
-        Records are built automatically by globbing ``{scl_dir}/*_SCL.tif``.
-        The same ``min_area_m2``, ``simplify_tolerance``, and ``buffer_m``
-        values from ``acolite.scl`` are reused — no duplication in YAML.
-
-        Returns a status dict with keys ``status``, ``output_path``,
-        ``n_records``.
+        Delegates to the shared implementation in
+        ``aquamatch.acolite_spec._run_polygon_datacube_step`` so this
+        pipeline entry point and ``run_acolite_pipeline()`` never drift
+        out of sync.
         """
-        scl_dir = Path(self.acolite.io.scl_dir)
-        scl_files = sorted(scl_dir.glob("*_SCL.tif"))
+        from aquamatch.acolite_spec import _run_polygon_datacube_step
 
-        if not scl_files:
-            logger.warning(
-                f"  No SCL files found in {scl_dir} — "
-                "water polygon datacube not built."
-            )
-            return {"status": "skipped", "reason": f"No SCL files in {scl_dir}"}
-
-        records = [{"scl_path": str(f)} for f in scl_files]
-        output_path = Path(self.acolite.scl.polygon_datacube_path)
-
-        logger.info(
-            f"  Building water polygon datacube from {len(records)} SCL files "
-            f"→ {output_path}"
-        )
-
-        gpkg_path = build_water_polygon_datacube(
-            records=records,
-            output_path=output_path,
+        return _run_polygon_datacube_step(
+            scl_dir=self.acolite.io.scl_dir,
+            output_path=self.acolite.scl.polygon_datacube_path,
             overwrite=self.acolite.scl.polygon_datacube_overwrite,
-            min_area_m2=self.acolite.scl.min_area_m2,
-            simplify_tolerance=self.acolite.scl.simplify_tolerance,
-            buffer_m=self.acolite.scl.buffer_m,
+            scl_kwargs=self.to_scl_kwargs(),
         )
-
-        logger.info(f"  Water polygon datacube written: {gpkg_path}")
-        return {
-            "status": "ok",
-            "output_path": str(gpkg_path),
-            "n_records": len(records),
-        }
 
     def _run_l2w_datacube(self) -> dict:
-        """
-        Aggregate all ``*_L2W.nc`` files found under ``acolite.io.output``
-        into a single Zarr datacube using
-        :func:`~aquamatch.acolite_spec.append_l2w_to_datacube`.
-
-        Each L2W file is appended in chronological order (by acquisition date
-        parsed from the filename).  If a date already exists in the datacube
-        and ``overwrite_date=False``, that file is skipped with a warning.
-
-        ``variables`` controls which L2W parameters are written.  ``None``
-        means all variables present in each file.  A warning is emitted for
-        any listed variable absent from a particular file; processing continues
-        for the variables that are present.
-
-        Returns a status dict with keys ``status``, ``output_path``,
-        ``n_processed``, ``n_skipped``, ``n_error``.
-        """
         output_dir = Path(self.acolite.io.output)
         l2w_files = sorted(output_dir.rglob("*_L2W.nc"))
 
@@ -1287,10 +1049,8 @@ tiles: {}
 
         dc = self.acolite.datacube
         output_path = Path(dc.output_path)
-        variables = dc.variables  # None or list[str]
+        variables = dc.variables
 
-        # Warn about any user-requested variables not seen across all files
-        # (we do this lazily per-file inside the loop below)
         logger.info(
             f"  Building L2W datacube from {len(l2w_files)} files → {output_path}"
         )
@@ -1301,7 +1061,6 @@ tiles: {}
 
         for l2w_nc in l2w_files:
             try:
-                # Warn if any requested variable is missing from this file
                 if variables:
                     import xarray as xr
 
@@ -1342,10 +1101,6 @@ tiles: {}
         }
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
 _KNOWN_TOP_LEVEL = {
     "campaign_name",
     "description",
@@ -1358,7 +1113,6 @@ _KNOWN_TOP_LEVEL = {
 
 
 def _check_keys(raw: dict, dataclass_type, context: str) -> None:
-    """Raise ValueError if *raw* contains keys not present in *dataclass_type*."""
     if not raw:
         return
 
@@ -1373,11 +1127,6 @@ def _check_keys(raw: dict, dataclass_type, context: str) -> None:
             f"Unknown configuration key(s) in [{context}]: {sorted(unknown)}. "
             f"Valid keys: {sorted(known)}"
         )
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 
 def _build_parser() -> argparse.ArgumentParser:
