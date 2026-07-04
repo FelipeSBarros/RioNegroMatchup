@@ -17,6 +17,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from aquamatch.scl_water import build_water_polygon_datacube
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,7 +123,6 @@ class L2WConfig:
     l2w_mask_water_expr: Optional[str] = "rhos_1600 < 0.0215"
     output_rhorc: bool = False
     output_rhos: bool = True
-    # Extended masking detail (new)
     l2w_mask_wave: int = 1600
     l2w_mask_threshold: float = 0.0215
     l2w_mask_cirrus_threshold: float = 0.005
@@ -138,53 +139,23 @@ class OutputConfig:
     netcdf_compression_level: int = 4
     map_rgb: bool = False
     map_rgb_maxrange: float = 0.15
-    # Extended output content (new)
     output_xy: bool = False
     output_geometry: bool = True
     l2w_export_geotiff: bool = False
     copy_datasets: str = "lon,lat,rhot_*"
 
 
-# ---------------------------------------------------------------------------
-# New dataclasses (Step B)
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class S2Config:
-    """
-    Sentinel-2 specific processing options.
-
-    Controls target resolution, tile merging, per-pixel geometry, and
-    blackfill handling.  Defaults match ACOLITE's own defaults for S2.
-    """
-
     s2_target_res: int = 10
-    """Target output resolution in metres.  One of 10, 20, or 60."""
-
     merge_tiles: bool = False
-    """Merge adjacent SAFE tiles before processing (useful for cross-tile water bodies)."""
-
     merge_full_tiles: bool = False
-    """Merge full (non-cropped) tiles."""
-
     extend_region: bool = False
-    """Extend the cropped region to cover the full tile extent."""
-
     geometry_type: str = "grids_footprint"
-    """Per-pixel geometry computation method."""
-
     geometry_res: int = 60
-    """Resolution (m) at which geometry grids are computed."""
-
     blackfill_skip: bool = True
-    """Skip scenes where the blackfill fraction exceeds ``blackfill_max``."""
-
     blackfill_max: float = 1.0
-    """Maximum allowed blackfill fraction (0–1).  1.0 = never skip."""
-
     blackfill_wave: int = 1600
-    """Band (nm) used to detect blackfill pixels."""
 
     def validate(self) -> None:
         if self.s2_target_res not in (10, 20, 60):
@@ -199,49 +170,18 @@ class S2Config:
 
 @dataclass
 class DsfConfig:
-    """
-    Dark Spectrum Fitting (DSF) fine-tuning.
-
-    Most users should leave these at their defaults.  Adjust when
-    processing very turbid water, small lakes, or scenes with bright
-    non-water targets that confuse the standard dark-pixel retrieval.
-    """
-
     dsf_aot_estimate: str = "tiled"
-    """AOT estimation mode.  One of ``tiled``, ``fixed``, ``fixed_band``."""
-
     dsf_spectrum_option: str = "intercept"
-    """Dark-spectrum selection.  One of ``intercept``, ``darkest``, ``percentile``."""
-
     dsf_nbands: int = 2
-    """Number of bands used for AOT retrieval."""
-
     dsf_nbands_fit: int = 2
-    """Number of bands used for the spectral fit."""
-
     dsf_filter_rhot: bool = False
-    """Apply a percentile filter to TOA reflectance before DSF."""
-
     dsf_filter_percentile: int = 50
-    """Percentile used when ``dsf_filter_rhot=True``."""
-
     dsf_smooth_aot: bool = False
-    """Spatially smooth the retrieved AOT field."""
-
     dsf_fixed_aot: Optional[float] = None
-    """Override AOT retrieval with a fixed value (e.g. 0.1).  ``None`` = retrieve."""
-
     dsf_aot_most_common_model: bool = True
-    """Use the most-common atmospheric model across tiles."""
-
     dsf_allow_lut_boundaries: bool = False
-    """Allow AOT to reach the edges of the LUT (may cause artefacts)."""
-
     dsf_min_tile_aot: float = 0.01
-    """Minimum acceptable tile AOT."""
-
     dsf_max_tile_aot: float = 1.20
-    """Maximum acceptable tile AOT."""
 
     def validate(self) -> None:
         valid_aot = {"tiled", "fixed", "fixed_band"}
@@ -264,25 +204,10 @@ class DsfConfig:
 
 @dataclass
 class ReprojectConfig:
-    """
-    Optional output reprojection.
-
-    Disabled by default.  Enable to reproject all ACOLITE outputs (L1R,
-    L2R, L2W) to a common projected CRS — useful for direct comparison
-    with in situ station coordinates and for consistent spatial analysis.
-    """
-
     reproject_outputs: bool = False
-    """Set ``True`` to enable reprojection of all output files."""
-
     output_projection_epsg: Optional[int] = None
-    """Target EPSG code (e.g. 32721 for UTM zone 21S covering Uruguay/NE Argentina)."""
-
     output_projection_resolution: Optional[float] = None
-    """Target pixel size in metres.  ``None`` = native sensor resolution."""
-
     output_projection_resampling_method: str = "bilinear"
-    """Resampling algorithm.  One of ``nearest``, ``bilinear``, ``cubic``."""
 
     def validate(self) -> None:
         if self.reproject_outputs:
@@ -305,11 +230,6 @@ class ReprojectConfig:
                     "output_projection_resolution must be positive, "
                     f"got {self.output_projection_resolution}."
                 )
-
-
-# ---------------------------------------------------------------------------
-# Post-processing helpers
-# ---------------------------------------------------------------------------
 
 
 def _parse_date_from_l2w(l2w_nc: Path) -> "pd.Timestamp":
@@ -518,11 +438,6 @@ def convert_l2w_to_zarr_cog(
     return zarr_path, cog_paths
 
 
-# ---------------------------------------------------------------------------
-# Processing status helpers
-# ---------------------------------------------------------------------------
-
-
 if TYPE_CHECKING:
     from aquamatch.acolite_spec import AcoliteConfig
 
@@ -531,12 +446,6 @@ def expected_outputs(
     output_dir: Path | str,
     acolite_cfg: "AcoliteConfig",
 ) -> dict[str, Path | None]:
-    """
-    Return the output files that should exist if a scene was fully processed.
-
-    Keys: ``"l1r"``, ``"l2r"``, ``"l2w"``.
-    Values: first matching Path found in output_dir, or None.
-    """
     output_dir = Path(output_dir)
     l2w_enabled = bool(acolite_cfg.l2w.l2w_parameters)
 
@@ -555,9 +464,6 @@ def is_scene_processed(
     output_dir: Path | str,
     acolite_cfg: "AcoliteConfig",
 ) -> bool:
-    """
-    Return True if all enabled ACOLITE stages have completed output files.
-    """
     output_dir = Path(output_dir)
     if not output_dir.exists():
         return False
@@ -574,11 +480,6 @@ def is_scene_processed(
     return True
 
 
-# ---------------------------------------------------------------------------
-# Top-level config
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class AcoliteConfig:
     """Master ACOLITE configuration."""
@@ -591,7 +492,6 @@ class AcoliteConfig:
     glint: GlintConfig = field(default_factory=GlintConfig)
     l2w: L2WConfig = field(default_factory=L2WConfig)
     output_format: OutputConfig = field(default_factory=OutputConfig)
-    # New sub-configs (additive — all default to ACOLITE's own defaults)
     s2: S2Config = field(default_factory=S2Config)
     dsf: DsfConfig = field(default_factory=DsfConfig)
     reproject: ReprojectConfig = field(default_factory=ReprojectConfig)
@@ -626,7 +526,6 @@ class AcoliteConfig:
     def to_settings_dict(self) -> dict[str, str]:
         d: dict[str, str] = {}
 
-        # --- IO ---
         d["inputfile"] = self.io.inputfile
         d["output"] = self.io.output
         if self.io.limit is not None:
@@ -637,7 +536,6 @@ class AcoliteConfig:
         if self.io.polygon_clip:
             d["polygon_clip"] = "true"
 
-        # --- RadCor ---
         d["aerosol_correction"] = self.radcor.aerosol_correction.value
         d["dsf_path_reflectance"] = self.radcor.dsf_path_reflectance
         rows, cols = self.radcor.dsf_tile_dimensions
@@ -649,13 +547,11 @@ class AcoliteConfig:
             d["uwv"] = str(self.radcor.uwv)
             d["pressure"] = str(self.radcor.pressure)
 
-        # --- TACT ---
         d["tact_run"] = str(self.tact.tact_run).lower()
         if self.tact.tact_run:
             d["tact_emissivity"] = str(self.tact.tact_emissivity)
             d["tact_reanalysis"] = self.tact.tact_reanalysis
 
-        # --- Glint ---
         d["glint_correction"] = str(self.glint.glint_correction).lower()
         if self.glint.glint_correction:
             d["glint_method"] = self.glint.glint_method.value
@@ -666,7 +562,6 @@ class AcoliteConfig:
                     self.glint.glint_mask_rhos_threshold
                 )
 
-        # --- L2W ---
         d["l2w_parameters"] = ",".join(self.l2w.l2w_parameters)
         d["l2w_mask"] = str(self.l2w.l2w_mask).lower()
         d["l2w_mask_negative_rhos"] = str(self.l2w.l2w_mask_negative_rhos).lower()
@@ -677,14 +572,12 @@ class AcoliteConfig:
             d["l2w_mask_water_expr"] = self.l2w.l2w_mask_water_expr
         d["output_rhorc"] = str(self.l2w.output_rhorc).lower()
         d["output_rhos"] = str(self.l2w.output_rhos).lower()
-        # Extended L2W masking detail
         d["l2w_mask_wave"] = str(self.l2w.l2w_mask_wave)
         d["l2w_mask_threshold"] = str(self.l2w.l2w_mask_threshold)
         d["l2w_mask_cirrus_threshold"] = str(self.l2w.l2w_mask_cirrus_threshold)
         d["l2w_mask_smooth"] = str(self.l2w.l2w_mask_smooth).lower()
         d["l2w_mask_smooth_sigma"] = str(self.l2w.l2w_mask_smooth_sigma)
 
-        # --- Output format ---
         d["export_geotiff"] = str(self.output_format.export_geotiff).lower()
         d["export_geotiff_coordinates"] = str(
             self.output_format.export_geotiff_coordinates
@@ -697,13 +590,11 @@ class AcoliteConfig:
         d["map_rgb"] = str(self.output_format.map_rgb).lower()
         if self.output_format.map_rgb:
             d["map_rgb_maxrange"] = str(self.output_format.map_rgb_maxrange)
-        # Extended output content
         d["output_xy"] = str(self.output_format.output_xy).lower()
         d["output_geometry"] = str(self.output_format.output_geometry).lower()
         d["l2w_export_geotiff"] = str(self.output_format.l2w_export_geotiff).lower()
         d["copy_datasets"] = self.output_format.copy_datasets
 
-        # --- S2 ---
         d["s2_target_res"] = str(self.s2.s2_target_res)
         d["merge_tiles"] = str(self.s2.merge_tiles).lower()
         d["merge_full_tiles"] = str(self.s2.merge_full_tiles).lower()
@@ -714,7 +605,6 @@ class AcoliteConfig:
         d["blackfill_max"] = str(self.s2.blackfill_max)
         d["blackfill_wave"] = str(self.s2.blackfill_wave)
 
-        # --- DSF fine-tuning ---
         d["dsf_aot_estimate"] = self.dsf.dsf_aot_estimate
         d["dsf_spectrum_option"] = self.dsf.dsf_spectrum_option
         d["dsf_nbands"] = str(self.dsf.dsf_nbands)
@@ -730,7 +620,6 @@ class AcoliteConfig:
         d["dsf_min_tile_aot"] = str(self.dsf.dsf_min_tile_aot)
         d["dsf_max_tile_aot"] = str(self.dsf.dsf_max_tile_aot)
 
-        # --- Reprojection ---
         if self.reproject.reproject_outputs:
             d["reproject_outputs"] = "L1R,L2R,L2W"
             if self.reproject.output_projection_epsg is not None:
@@ -823,36 +712,6 @@ class AcoliteConfig:
         tile_config=None,
         skip_existing: bool = True,
     ) -> list[dict]:
-        """
-        Run ACOLITE for each SAFE folder in safe_list.
-
-        Spatial restriction precedence (per scene)
-        -------------------------------------------
-        1. Static **polygon** from ``tile_config`` — highest priority.
-           SCL clipping is suppressed for this tile.
-        2. **SCL-derived polygon** (``use_scl=True``) — applied only when
-           the tile has no static polygon in ``tile_config``.
-        3. Static **limit** from ``tile_config``.
-        4. **No restriction** — full scene processed.
-
-        Parameters
-        ----------
-        safe_list : list of paths to Sentinel-2 SAFE folders.
-        base_output : parent output directory.
-        dry_run : if True, log commands without executing.
-        continue_on_error : if True, log errors and continue on failure.
-        use_scl : if True, resolve SCL file and apply polygon clipping.
-        scl_dir : directory containing SCL GeoTIFF files.
-        scl_kwargs : kwargs forwarded to ``with_scl_polygon()``.
-        tile_config : optional ``TilesSection`` instance.
-        skip_existing : if True, skip already-processed scenes.
-
-        Returns
-        -------
-        list[dict]
-            One result dict per image with keys including ``scl_used``,
-            ``tile_restriction``, and ``skipped_existing``.
-        """
         from aquamatch.scl_water import resolve_scl_path
         from aquamatch.sentinel_data import _tile_from_scene_id
 
@@ -898,7 +757,6 @@ class AcoliteConfig:
                 )
                 continue
 
-            # --- Skip already-processed scenes ---
             if skip_existing:
                 image_output_check = base_output / stem
                 if is_scene_processed(image_output_check, self):
@@ -925,7 +783,6 @@ class AcoliteConfig:
             image_output = base_output / stem
             image_output.mkdir(parents=True, exist_ok=True)
 
-            # --- Resolve tile spatial restriction ---
             tile_polygon = None
             tile_limit = None
             tile_restriction = "none"
@@ -982,7 +839,6 @@ class AcoliteConfig:
 
             scl_used = False
             try:
-                # --- SCL clipping (suppressed when static polygon is set) ---
                 if use_scl and tile_polygon is None:
                     scl_path = resolve_scl_path(safe_path, scl_dir)
                     if scl_path is None:
@@ -1096,15 +952,6 @@ class AcoliteConfig:
         tile_config=None,
         **kwargs,
     ):
-        """
-        Build an AcoliteConfig from a single row of the campaigns CSV.
-
-        Spatial restriction resolution order:
-        1. tile_config + polygon → io.polygon + polygon_clip=True
-        2. tile_config + limit  → io.limit
-        3. tile_config + no restriction → full scene
-        4. tile_config=None → lat/lon buffer (legacy)
-        """
         lat = float(row["latitud"])
         lon = float(row["longitud"])
         date_str = str(row.get("date", "unknown"))[:10]
@@ -1144,17 +991,6 @@ class AcoliteConfig:
 
     @classmethod
     def low_memory(cls, acolite_executable: str, **kwargs) -> "AcoliteConfig":
-        """
-        Return a pre-configured AcoliteConfig optimised for low-memory machines.
-
-        Compared to the standard defaults:
-        - DSF tile size halved (60×60) to reduce peak RAM.
-        - s2_target_res set to 20 m (halves data volume vs 10 m).
-        - Cloud-optimised GeoTIFF disabled (saves post-processing RAM).
-        - RGB maps disabled.
-        - NetCDF compression level reduced to 2 (fast, smaller footprint).
-        - output_rhorc disabled.
-        """
         return cls(
             acolite_executable=acolite_executable,
             radcor=RadCorConfig(
@@ -1173,7 +1009,7 @@ class AcoliteConfig:
                 netcdf_compression_level=2,
             ),
             s2=S2Config(
-                s2_target_res=20,  # halves data volume vs 10 m
+                s2_target_res=20,
             ),
             **kwargs,
         )
@@ -1182,6 +1018,80 @@ class AcoliteConfig:
         settings = self.to_settings_dict()
         lines = "\n".join(f"  {k} = {v}" for k, v in settings.items())
         return f"AcoliteConfig(\n{lines}\n)"
+
+
+# ---------------------------------------------------------------------------
+# Shared post-processing step: water polygon datacube (GeoPackage)
+# ---------------------------------------------------------------------------
+
+
+def _run_polygon_datacube_step(
+    scl_dir: "Path | str",
+    output_path: "Path | str",
+    overwrite: bool,
+    scl_kwargs: dict,
+) -> dict:
+    """
+    Build (or update) the water polygon GeoPackage datacube from all SCL
+    GeoTIFF files found in ``scl_dir``.
+
+    This is the single shared implementation used by both
+    ``PipelineConfig._run_polygon_datacube()`` (YAML-driven pipeline) and
+    ``run_acolite_pipeline()`` (direct/programmatic usage), so the two
+    entry points can never drift out of sync.
+
+    Records are built automatically by globbing ``{scl_dir}/*_SCL.tif``.
+
+    Parameters
+    ----------
+    scl_dir:
+        Directory containing SCL GeoTIFF files (typically ``{output_dir}/scl/``).
+    output_path:
+        Destination GeoPackage file (``.gpkg``).
+    overwrite:
+        If ``True``, delete any existing GeoPackage and rebuild from scratch.
+    scl_kwargs:
+        Forwarded to ``build_water_polygon_datacube`` (``min_area_m2``,
+        ``simplify_tolerance``, ``buffer_m``).
+
+    Returns
+    -------
+    dict
+        ``{"status": "skipped", "reason": ...}`` when no SCL files are found,
+        otherwise ``{"status": "ok", "output_path": str, "n_records": int}``.
+        Raises whatever ``build_water_polygon_datacube`` raises — callers are
+        expected to handle/propagate failures themselves.
+    """
+    scl_dir = Path(scl_dir)
+    output_path = Path(output_path)
+    scl_files = sorted(scl_dir.glob("*_SCL.tif"))
+
+    if not scl_files:
+        logger.warning(
+            f"  No SCL files found in {scl_dir} — " "water polygon datacube not built."
+        )
+        return {"status": "skipped", "reason": f"No SCL files in {scl_dir}"}
+
+    records = [{"scl_path": str(f)} for f in scl_files]
+
+    logger.info(
+        f"  Building water polygon datacube from {len(records)} SCL files "
+        f"→ {output_path}"
+    )
+
+    gpkg_path = build_water_polygon_datacube(
+        records=records,
+        output_path=output_path,
+        overwrite=overwrite,
+        **scl_kwargs,
+    )
+
+    logger.info(f"  Water polygon datacube written: {gpkg_path}")
+    return {
+        "status": "ok",
+        "output_path": str(gpkg_path),
+        "n_records": len(records),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1204,31 +1114,6 @@ def run_acolite_pipeline(
     limit: "Optional[tuple[float, float, float, float]]" = None,
     polygon: "Optional[str]" = None,
 ) -> dict:
-    """
-    Run ACOLITE atmospheric correction on all ``.SAFE`` folders in a directory.
-
-    Two usage modes
-    ---------------
-    **Simple** — pass individual path and flag arguments::
-
-        result = run_acolite_pipeline(
-            acolite_executable="/path/to/acolite",
-            safe_dir="data/sentinel_downloads",
-            output="data/acolite_output",
-            use_scl=True,
-        )
-
-    **Advanced** — pass a pre-built ``AcoliteConfig``::
-
-        cfg = AcoliteConfig.low_memory(acolite_executable="/path/to/acolite")
-        result = run_acolite_pipeline(acolite_config=cfg, safe_dir=..., output=...)
-
-    Returns
-    -------
-    dict
-        ``{"step": "acolite", "status": "success"|"error", "outputs": {...},
-        "error": None, "elapsed_seconds": float}``
-    """
     import time
     from aquamatch.pipeline_config import (
         AcoliteSection,
@@ -1237,7 +1122,6 @@ def run_acolite_pipeline(
         TilesSection,
     )
 
-    # --- Validate mutually exclusive spatial arguments ---
     if limit is not None and polygon is not None:
         raise ValueError("Specify either 'limit' or 'polygon', not both.")
     if (limit is not None or polygon is not None) and tile_config is not None:
@@ -1246,7 +1130,6 @@ def run_acolite_pipeline(
             "'tile_config' (per-tile restriction), not both."
         )
 
-    # --- Resolve defaults ---
     _a = AcoliteSection()
     _io = AcoliteIOSection()
     _scl = SclSection()
@@ -1305,12 +1188,6 @@ def run_acolite_pipeline(
                 polygon_clip=_global_polygon is not None,
             )
 
-        # Validate the fully-assembled config before touching the filesystem.
-        # This catches bad sub-config values (invalid s2_target_res, dsf_aot_estimate,
-        # reproject_outputs without EPSG, etc.) as clear Python errors rather than
-        # silent bad settings files passed to the ACOLITE binary.
-        # IOConfig.inputfile validation is skipped here because inputfile is set
-        # per-scene inside run_batch, not at the pipeline level.
         cfg.s2.validate()
         cfg.dsf.validate()
         cfg.reproject.validate()
@@ -1401,11 +1278,6 @@ def _with_scl_polygon(
 
 
 AcoliteConfig.with_scl_polygon = _with_scl_polygon
-
-
-# ---------------------------------------------------------------------------
-# CLI — hybrid: --config (YAML) or explicit flags
-# ---------------------------------------------------------------------------
 
 
 def _build_acolite_parser() -> "argparse.ArgumentParser":

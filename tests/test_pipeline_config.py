@@ -1161,7 +1161,7 @@ class TestRunPolygonDatacube:
             return Path(output_path)
 
         with patch(
-            "aquamatch.pipeline_config.build_water_polygon_datacube",
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
             side_effect=fake_build,
         ):
             result = cfg._run_polygon_datacube()
@@ -1190,7 +1190,7 @@ class TestRunPolygonDatacube:
             return Path(output_path)
 
         with patch(
-            "aquamatch.pipeline_config.build_water_polygon_datacube",
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
             side_effect=fake_build,
         ):
             cfg._run_polygon_datacube()
@@ -1215,7 +1215,7 @@ class TestRunPolygonDatacube:
             return Path(output_path)
 
         with patch(
-            "aquamatch.pipeline_config.build_water_polygon_datacube",
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
             side_effect=fake_build,
         ):
             cfg._run_polygon_datacube()
@@ -1238,7 +1238,7 @@ class TestRunPolygonDatacube:
         with patch(
             "aquamatch.acolite_spec.AcoliteConfig.run_batch", return_value=[]
         ), patch(
-            "aquamatch.pipeline_config.build_water_polygon_datacube",
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
             side_effect=fake_build,
         ):
             result = cfg._run_acolite()
