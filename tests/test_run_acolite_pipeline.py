@@ -134,7 +134,211 @@ class TestRunAcolitePipelinePolygonDatacubeDisabled:
         assert pd["status"] == "skipped"
 
 
-class TestRunAcolitePipelinePolygonDatacubeEnabledEmpty:
+class TestRunAcolitePipelinePolygonDatacubeEnabledWithFiles:
+    """A5 — build_polygon_datacube=True with real *_SCL.tif files in scl_dir."""
+
+    def _make_scl_files(self, scl_dir: Path, n: int = 2) -> list[Path]:
+        scl_dir.mkdir(parents=True, exist_ok=True)
+        files = []
+        for i in range(n):
+            f = scl_dir / f"scene{i}_SCL.tif"
+            f.write_bytes(b"fake")
+            files.append(f)
+        return files
+
+    def test_calls_build_water_polygon_datacube_with_correct_records(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=2)
+        dc_path = tmp_path / "custom_water_polygons.gpkg"
+
+        captured = {}
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            captured["records"] = records
+            captured["output_path"] = output_path
+            captured["overwrite"] = overwrite
+            captured["kwargs"] = kwargs
+            return Path(output_path)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            result = run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+                polygon_datacube_path=dc_path,
+            )
+
+        assert len(captured["records"]) == 2
+        assert captured["output_path"] == dc_path
+        assert result["outputs"]["polygon_datacube"]["status"] == "ok"
+        assert result["outputs"]["polygon_datacube"]["n_records"] == 2
+
+    def test_overwrite_forwarded(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        captured = {}
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            captured["overwrite"] = overwrite
+            return Path(output_path)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+                polygon_datacube_overwrite=True,
+            )
+
+        assert captured["overwrite"] is True
+
+    def test_overwrite_defaults_to_false(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        captured = {}
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            captured["overwrite"] = overwrite
+            return Path(output_path)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+            )
+
+        assert captured["overwrite"] is False
+        assert SclSection().polygon_datacube_overwrite is False
+
+    def test_default_scl_kwargs_forwarded(self, tmp_path):
+        """min_area_m2/simplify_tolerance/buffer_m default to SclSection()."""
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        captured = {}
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            captured.update(kwargs)
+            return Path(output_path)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+            )
+
+        defaults = SclSection()
+        assert captured["min_area_m2"] == defaults.min_area_m2
+        assert captured["simplify_tolerance"] == defaults.simplify_tolerance
+        assert captured["buffer_m"] == defaults.buffer_m
+
+    def test_custom_scl_kwargs_forwarded_to_datacube_too(self, tmp_path):
+        """scl_kwargs is shared between use_scl clipping and the datacube
+        step by design — no duplicate parameter surface (see A5 plan)."""
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        captured = {}
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            captured.update(kwargs)
+            return Path(output_path)
+
+        custom_kwargs = {
+            "min_area_m2": 9999,
+            "simplify_tolerance": 5,
+            "buffer_m": 42,
+        }
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+                scl_kwargs=custom_kwargs,
+            )
+
+        assert captured["min_area_m2"] == 9999
+        assert captured["simplify_tolerance"] == 5
+        assert captured["buffer_m"] == 42
+
+    def test_polygon_datacube_path_defaults_to_scl_section(self, tmp_path):
+        exe = _make_exe(tmp_path)
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        scl_dir = tmp_path / "scl"
+        self._make_scl_files(scl_dir, n=1)
+
+        captured = {}
+
+        def fake_build(records, output_path, overwrite, **kwargs):
+            captured["output_path"] = output_path
+            return Path(output_path)
+
+        with patch(
+            "aquamatch.acolite_spec.build_water_polygon_datacube",
+            side_effect=fake_build,
+        ):
+            run_acolite_pipeline(
+                acolite_executable=str(exe),
+                safe_dir=safe_dir,
+                output=tmp_path / "out",
+                scl_dir=scl_dir,
+                use_scl=False,
+                build_polygon_datacube=True,
+            )
+
+        assert captured["output_path"] == Path(SclSection().polygon_datacube_path)
+
     """A4 — build_polygon_datacube=True but scl_dir has no *_SCL.tif files."""
 
     def test_skipped_when_scl_dir_empty(self, tmp_path):
