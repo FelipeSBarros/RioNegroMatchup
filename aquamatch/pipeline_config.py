@@ -295,8 +295,25 @@ class PipelineConfig:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         template = """\
+# =============================================================================
+# aquamatch — Pipeline Configuration
+# =============================================================================
+# One YAML file drives the entire pipeline: in situ data preparation,
+# satellite catalog building, product download, and atmospheric correction.
+#
+# Usage:
+#   Generate this template:
+#     python -m aquamatch.pipeline_config --generate campaign_2025.yaml
+#   Run the full pipeline:
+#     python -m aquamatch.pipeline_config --run campaign_2025.yaml
+# =============================================================================
+
 campaign_name: rio_negro_2025
 description: "Sentinel-2 / in situ water quality matchup"
+
+# =============================================================================
+# Step 1 — In situ data preparation
+# =============================================================================
 
 insitu:
   enabled: true
@@ -306,6 +323,9 @@ insitu:
   output_unique_csv: data/monitoring_data/campaigns_unique_data.csv
   skip_clean: false
 
+# =============================================================================
+# Step 2 — Sentinel-2 catalog search
+# =============================================================================
 sentinel:
   enabled: true
   catalog_json: data/sentinel_downloads/sentinel_catalog.json
@@ -313,45 +333,92 @@ sentinel:
   time_delta: 1
   cloud_cover: 10
 
+# =============================================================================
+# Step 3 — Sentinel-2 image download
+# =============================================================================
 download:
   enabled: true
   output_dir: data/sentinel_downloads
   catalog_json: data/sentinel_downloads/sentinel_catalog.json
+  
+  # Download selection strategy. Controls which scenes are downloaded per
+  # field date from the bucketed catalog (same_day / previous / posterior).
+  #
+  # best      — prefer same_day, fall back to previous then posterior.
+  #             Picks up to max_per_date scenes filling quota in that order.
+  # same_day  — only download scenes acquired on the exact field date.
+  # previous  — prefer same_day, fall back to previous acquisitions only.
+  # posterior — prefer same_day, fall back to posterior acquisitions only.
+  # all       — download every scene found across all buckets.
   strategy: best
+  
+  # Maximum number of scenes to download per field date.
+  # Ignored when strategy is "all".
   max_per_date: 1
+  
+  # Optional secondary cloud cover ceiling applied at download time,
+  # independently of the search ceiling (sentinel.cloud_cover).
+  # Set to null to apply no additional filter.
   max_cloud_cover: null
-  download_scl: true
+  download_scl: true                # Also download SCL asset (recommended)
 
+# =============================================================================
+# Step 4 — Atmospheric correction (ACOLITE)
+# =============================================================================
 acolite:
   enabled: true
+    # Path to the ACOLITE executable (acolite.py or the compiled binary)
   acolite_executable: /path/to/acolite/acolite.py
+
+  # low_memory: true reduces RAM usage at the cost of processing speed.
+  # Recommended when processing large tiles on machines with < 16 GB RAM.
   low_memory: false
-  continue_on_error: true
-  skip_existing: true
 
+  continue_on_error: true           # Keep processing remaining scenes on failure
+  skip_existing: true               # Skip scenes whose output files already exist;
+
+  # --- Input / Output ---
   io:
-    output: data/acolite_output
-    safe_dir: data/sentinel_downloads
-    scl_dir: data/sentinel_downloads/scl
+    output: data/acolite_output     # Root output directory for ACOLITE products
+    safe_dir: data/sentinel_downloads   # Directory containing .SAFE folders
+    scl_dir: data/sentinel_downloads/scl  # Directory containing SCL GeoTIFFs
 
+  # --- Radiometric correction ---
   radcor:
+    # Atmospheric correction processor: dsf | exp | tact
     aerosol_correction: dsf
-    dsf_path_reflectance: tiled
-    dsf_tile_dimensions: [120, 120]
-    dsf_minimum_tile_cover: 0.10
-    ancillary_data: true
-    uoz: 0.3
-    uwv: 1.5
-    pressure: 1013.25
 
+    # DSF path reflectance method: tiled | fixed | percentile
+    dsf_path_reflectance: tiled
+
+    # DSF tile dimensions [rows, cols] in pixels
+    dsf_tile_dimensions: [120, 120]
+
+    # Minimum fraction of valid pixels required per DSF tile (0.0–1.0)
+    dsf_minimum_tile_cover: 0.10
+
+    # Use ECMWF ancillary data for atmospheric parameters (recommended)
+    ancillary_data: true
+
+    # Fallback values used when ancillary_data is false
+    uoz: 0.3                        # Ozone column (cm-atm)
+    uwv: 1.5                        # Water vapour column (g/cm²)
+    pressure: 1013.25               # Sea-level pressure (hPa)
+
+  # --- Sunglint correction ---
   glint:
     glint_correction: true
+    # Glint correction method: none | hedley | vanhellemont2019
     glint_method: vanhellemont2019
-    glint_threshold: 0.01
-    glint_mask_rhos: true
-    glint_mask_rhos_threshold: 0.15
 
+    glint_threshold: 0.01           # Minimum glint reflectance to correct
+    glint_mask_rhos: true           # Mask pixels above threshold
+    glint_mask_rhos_threshold: 0.15 # Masking threshold (dimensionless)
+
+  # --- L2W water quality products ---
   l2w:
+    # Parameters to compute. Available: t_nechad, spm_nechad, chl_oc3,
+    # chl_re, aphy_443, fai, ndwi, ndvi, and others supported by ACOLITE.
     l2w_parameters:
       - t_nechad
       - spm_nechad
@@ -366,21 +433,23 @@ acolite:
     l2w_mask_cirrus: true
     l2w_mask_high_toa: true
     l2w_mask_high_toa_threshold: 0.3
+    # Water expression for masking land. Set null to disable.
     l2w_mask_water_expr: "rhos_1600 < 0.0215"
-    output_rhorc: false
-    output_rhos: true
     l2w_mask_wave: 1600
     l2w_mask_threshold: 0.0215
     l2w_mask_cirrus_threshold: 0.005
     l2w_mask_smooth: true
     l2w_mask_smooth_sigma: 3
+    
+    output_rhorc: false             # Output Rayleigh-corrected reflectance
+    output_rhos: true               # Output surface reflectance
 
   output_format:
     export_geotiff: true
     export_geotiff_coordinates: true
     export_cloud_optimized_geotiff: false
     netcdf_compression: true
-    netcdf_compression_level: 4
+    netcdf_compression_level: 4    # 1 (fast) – 9 (small); recommended: 4–6
     map_rgb: false
     map_rgb_maxrange: 0.15
     output_xy: false
@@ -389,10 +458,10 @@ acolite:
     copy_datasets: "lon,lat,rhot_*"
 
   scl:
-    use_scl: true
-    min_area_m2: 5000.0
-    simplify_tolerance: 20.0
-    buffer_m: 0.0
+    use_scl: true                   # Extract water mask from SCL and clip
+    min_area_m2: 5000.0             # Minimum water polygon area (m²)
+    simplify_tolerance: 20.0        # Douglas-Peucker tolerance (m, ~1 pixel)
+    buffer_m: 0.0                   # Outward buffer around water mask (m)
     build_polygon_datacube: false
     polygon_datacube_path: data/water_polygons.gpkg
     polygon_datacube_overwrite: false
@@ -440,6 +509,25 @@ acolite:
       y: 512
       x: 512
 
+# =============================================================================
+# Tile spatial restrictions
+# =============================================================================
+# Per-tile bounding boxes or polygon paths, keyed by 5-character MGRS tile
+# code.  For each tile, specify either 'polygon' OR 'limit' (not both), or
+# omit the tile entirely to process the full scene.
+#
+# polygon: path to a GeoJSON or WKT file defining the region of interest.
+#          Takes precedence over 'limit' at runtime.
+# limit:   bounding box as [south, west, north, east] in decimal degrees.
+#
+# Example:
+#   21HUD:
+#     polygon: data/polygons/21HUD.geojson
+#   21HVD:
+#     limit: [-34.2, -56.8, -33.0, -55.1]
+#   21HWD:
+#     # no entry — full scene processed
+# =============================================================================
 tiles: {}
 """
         output_path.write_text(template)

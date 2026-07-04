@@ -1113,6 +1113,9 @@ def run_acolite_pipeline(
     dry_run: bool = False,
     limit: "Optional[tuple[float, float, float, float]]" = None,
     polygon: "Optional[str]" = None,
+    build_polygon_datacube: "bool | None" = None,
+    polygon_datacube_path: "Path | str | None" = None,
+    polygon_datacube_overwrite: "bool | None" = None,
 ) -> dict:
     import time
     from aquamatch.pipeline_config import (
@@ -1143,6 +1146,24 @@ def run_acolite_pipeline(
         continue_on_error if continue_on_error is not None else _a.continue_on_error
     )
     _tile_config = tile_config if tile_config is not None else TilesSection()
+
+    # --- Water polygon datacube defaults (Gap A / feature parity with
+    # PipelineConfig._run_polygon_datacube via SclSection) ---
+    _build_polygon_datacube = (
+        build_polygon_datacube
+        if build_polygon_datacube is not None
+        else _scl.build_polygon_datacube
+    )
+    _polygon_datacube_path = (
+        Path(polygon_datacube_path)
+        if polygon_datacube_path is not None
+        else Path(_scl.polygon_datacube_path)
+    )
+    _polygon_datacube_overwrite = (
+        polygon_datacube_overwrite
+        if polygon_datacube_overwrite is not None
+        else _scl.polygon_datacube_overwrite
+    )
 
     if limit is not None:
         _global_limit = tuple(limit)
