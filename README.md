@@ -216,6 +216,25 @@ run_acolite_pipeline(
 )
 ```
 
+To also aggregate the per-scene water masks into a single water polygon GeoPackage datacube after processing — the same output produced by `build_polygon_datacube: true` in the YAML pipeline (see below) — pass `build_polygon_datacube=True`:
+
+```python
+result = run_acolite_pipeline(
+    acolite_executable="/path/to/acolite",
+    safe_dir="data/sentinel_downloads",
+    output="data/acolite_output",
+    use_scl=True,
+    scl_dir="data/sentinel_downloads/scl",
+    build_polygon_datacube=True,
+    polygon_datacube_path="data/water_polygons.gpkg",
+)
+
+result["outputs"]["polygon_datacube"]
+# {"status": "ok", "output_path": "data/water_polygons.gpkg", "n_records": 3}
+```
+
+`polygon_datacube_path` defaults to `data/water_polygons.gpkg` and `polygon_datacube_overwrite` defaults to `False` (append/skip-duplicates) when omitted — matching `SclSection`'s defaults in the YAML config. The `min_area_m2`/`simplify_tolerance`/`buffer_m` values passed via `scl_kwargs` are reused for the datacube build as well, so there's no separate parameter surface to configure twice.
+
 For batch processing across multiple scenes with per-tile spatial restrictions:
 
 ```python
