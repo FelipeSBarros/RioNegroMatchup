@@ -122,12 +122,35 @@ def create_bbox_from_point(lon: float, lat: float, buffer_degrees=0.01):
     )
 
 
-def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
+def search_images(
+    bbox_geometry,
+    date: str,
+    time_delta: int,
+    cloud_cover: int,
+    catalog=None,
+    client=None,
+):
     """
     Busca imagens Sentinel-2 L1C ± time_delta dias da data de campo,
     e para cada cena L1C encontrada, busca a cena L2A correspondente
     pela mesma data de aquisição.
+
+    Parameters
+    ----------
+    catalog:
+        Optional SentinelHubCatalog instance. Defaults to the module-level
+        `catalog` (built from env vars or a previously-passed
+        SentinelCredentials via build_clients()).
+    client:
+        Optional pystac_client.Client instance. Defaults to the
+        module-level `client`.
     """
+    # Resolve via globals() rather than a bound default, so patches to the
+    # module-level attribute (aquamatch.sentinel_data.catalog / .client)
+    # are still picked up at call time when no explicit override is given.
+    _catalog = catalog if catalog is not None else globals()["catalog"]
+    _client = client if client is not None else globals()["client"]
+
     date_obj = datetime.fromisoformat(date)
     start = (date_obj - timedelta(days=time_delta)).strftime("%Y-%m-%d")
     end = (date_obj + timedelta(days=time_delta)).strftime("%Y-%m-%d")
@@ -135,7 +158,7 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
     logger.info(f"Buscando imagens entre {start} e {end} (cloud < {cloud_cover}%)")
 
     l1c_results = list(
-        catalog.search(
+        _catalog.search(
             DataCollection.SENTINEL2_L1C,
             bbox=bbox_geometry,
             time=(start, end),
@@ -150,7 +173,6 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
     items = []
     for item in l1c_results:
         item_id = item["id"]
-
         acquisition_datetime = item["properties"]["datetime"]
         acquisition_date = acquisition_datetime[:10]
 
@@ -159,7 +181,7 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
         )
 
         l2a_results = list(
-            client.search(
+            _client.search(
                 collections=["sentinel-2-l2a"],
                 bbox=bbox_geometry,
                 datetime=f"{acquisition_date}/{acquisition_date}",
