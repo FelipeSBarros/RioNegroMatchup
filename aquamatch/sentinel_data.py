@@ -6,41 +6,47 @@ import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 import boto3
 import pandas as pd
 import requests
-from dotenv import load_dotenv
 from pystac_client import Client
 from sentinelhub import CRS, BBox, DataCollection, SHConfig, SentinelHubCatalog
+from aquamatch.credentials import SentinelCredentials
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
-config = SHConfig()
-config.sh_client_id = os.getenv("SH_CLIENT_ID")
-config.sh_client_secret = os.getenv("SH_CLIENT_SECRET")
-config.sh_base_url = "https://sh.dataspace.copernicus.eu"
-config.sh_token_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
-
-catalog = SentinelHubCatalog(config=config)
-
 earthsearch_catalog_url = "https://earth-search.aws.element84.com/v1"
-client = Client.open(earthsearch_catalog_url)
-
-# AWS Dataspace
-s3 = boto3.resource(
-    "s3",
-    endpoint_url="https://eodata.dataspace.copernicus.eu",
-    aws_access_key_id=os.getenv("DATASPACE_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("DATASPACE_SECRET_KEY"),
-    region_name="default",
-)
 
 # Subdirectory name used for all SCL GeoTIFF files under the download root.
 SCL_SUBDIR = "scl"
+
+
+def build_clients(credentials: Optional[SentinelCredentials] = None):
+    """Build (catalog, client, s3) from explicit credentials, or fall back to env vars."""
+    creds = credentials or SentinelCredentials.from_env()
+
+    sh_config = SHConfig()
+    sh_config.sh_client_id = creds.sh_client_id
+    sh_config.sh_client_secret = creds.sh_client_secret
+    sh_config.sh_base_url = creds.sh_base_url
+    sh_config.sh_token_url = creds.sh_token_url
+
+    catalog_ = SentinelHubCatalog(config=sh_config)
+    client_ = Client.open(earthsearch_catalog_url)
+    s3_ = boto3.resource(
+        "s3",
+        endpoint_url="https://eodata.dataspace.copernicus.eu",
+        aws_access_key_id=creds.dataspace_access_key,
+        aws_secret_access_key=creds.dataspace_secret_key,
+        region_name="default",
+    )
+    return catalog_, client_, s3_
+
+
+catalog, client, s3 = build_clients()
 
 
 def _tile_from_scene_id(scene_id: str) -> str | None:
