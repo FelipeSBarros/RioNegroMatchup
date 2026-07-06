@@ -14,6 +14,7 @@ import requests
 from pystac_client import Client
 from sentinelhub import CRS, BBox, DataCollection, SHConfig, SentinelHubCatalog
 from aquamatch.credentials import SentinelCredentials
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -219,7 +220,13 @@ def search_images(
     return items
 
 
-def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=10):
+def build_catalog(
+    csv_file: Path,
+    output_json: Path,
+    time_delta=1,
+    cloud_cover=10,
+    credentials: "Optional[SentinelCredentials]" = None,
+):
     """
     Search for Sentinel-2 scenes matching each field date in *csv_file* and
     write a catalog JSON to *output_json*.
@@ -248,7 +255,26 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
         - ``href``        — S3/CDSE download URL for the SAFE product
         - ``delta_days``  — absolute difference in days from the field date
         - ``l2a_scl``     — matching SCL asset URL, or ``None``
+
+    Parameters
+    ----------
+    credentials:
+        Optional SentinelCredentials for explicit client construction
+        (e.g. Colab, or any environment where env vars aren't set).
+        When provided, ``build_clients(credentials)`` is called once and
+        the resulting catalog/client are reused for every field date in
+        this call — not rebuilt per row. When ``None`` (default),
+        :func:`search_images` falls back to its own resolution
+        (module-level ``catalog``/``client`` globals), matching current
+        behaviour exactly.
     """
+    # Resolve once, up front — reused across every unique (date, location)
+    # row below rather than rebuilt per row.
+    _catalog = None
+    _client = None
+    if credentials is not None:
+        _catalog, _client, _ = build_clients(credentials)
+
     df = pd.read_csv(csv_file, sep=None, engine="python")
     if "date" not in df.columns:
         raise ValueError("date column not found in CSV")
@@ -282,7 +308,14 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
             f"Processando data {field_date} | lon={row['longitud']} lat={row['latitud']}"
             + (f" | tile={expected_tile}" if filter_by_tile else "")
         )
-        images = search_images(bbox_geometry, field_date, time_delta, cloud_cover)
+        images = search_images(
+            bbox_geometry,
+            field_date,
+            time_delta,
+            cloud_cover,
+            catalog=_catalog,
+            client=_client,
+        )
 
         for img in images:
             scene_id = img["id"]
