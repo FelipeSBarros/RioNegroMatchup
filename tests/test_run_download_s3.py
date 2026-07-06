@@ -20,8 +20,6 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from aquamatch.sentinel_data import run_download
 
 # ---------------------------------------------------------------------------

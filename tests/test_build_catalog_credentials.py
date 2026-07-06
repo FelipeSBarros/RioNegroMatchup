@@ -23,7 +23,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
-import pytest
 
 from aquamatch.credentials import SentinelCredentials
 from aquamatch.sentinel_data import build_catalog

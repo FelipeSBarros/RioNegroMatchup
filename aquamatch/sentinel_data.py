@@ -13,8 +13,8 @@ import pandas as pd
 import requests
 from pystac_client import Client
 from sentinelhub import CRS, BBox, DataCollection, SHConfig, SentinelHubCatalog
+
 from aquamatch.credentials import SentinelCredentials
-from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -124,12 +124,12 @@ def create_bbox_from_point(lon: float, lat: float, buffer_degrees=0.01):
 
 
 def search_images(
-    bbox_geometry,
-    date: str,
-    time_delta: int,
-    cloud_cover: int,
-    catalog=None,
-    client=None,
+        bbox_geometry,
+        date: str,
+        time_delta: int,
+        cloud_cover: int,
+        catalog=None,
+        client=None,
 ):
     """
     Busca imagens Sentinel-2 L1C ± time_delta dias da data de campo,
@@ -221,11 +221,11 @@ def search_images(
 
 
 def build_catalog(
-    csv_file: Path,
-    output_json: Path,
-    time_delta=1,
-    cloud_cover=10,
-    credentials: "Optional[SentinelCredentials]" = None,
+        csv_file: Path,
+        output_json: Path,
+        time_delta=1,
+        cloud_cover=10,
+        credentials: "Optional[SentinelCredentials]" = None,
 ):
     """
     Search for Sentinel-2 scenes matching each field date in *csv_file* and
@@ -501,8 +501,8 @@ def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -
     safe_folder = Path(output_dir) / product_id
     safe_file = Path(output_dir) / f"{product_id}.SAFE"
     safe_exists = (
-        safe_folder.exists() and safe_folder.is_dir() and any(safe_folder.iterdir())
-    ) or safe_file.exists()
+                          safe_folder.exists() and safe_folder.is_dir() and any(safe_folder.iterdir())
+                  ) or safe_file.exists()
 
     # Verifica SCL apenas se necessário
     scl_exists = None
@@ -523,10 +523,10 @@ def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -
 
 
 def _select_scenes(
-    images_found: "dict | list",
-    strategy: str = "best",
-    max_per_date: int = 1,
-    max_cloud_cover: "float | None" = None,
+        images_found: "dict | list",
+        strategy: str = "best",
+        max_per_date: int = 1,
+        max_cloud_cover: "float | None" = None,
 ) -> list[dict]:
     """
     Select scenes to download from an ``images_found`` entry.
@@ -621,13 +621,14 @@ def _select_scenes(
 
 
 def run_download(
-    catalog_json: Path,
-    output_dir: Path,
-    strategy: str = "best",
-    max_per_date: int = 1,
-    max_cloud_cover: "int | None" = None,
-    download_scl: bool = True,
-    s3=None,
+        catalog_json: Path,
+        output_dir: Path,
+        strategy: str = "best",
+        max_per_date: int = 1,
+        max_cloud_cover: "int | None" = None,
+        download_scl: bool = True,
+        s3=None,
+        credentials: "Optional[SentinelCredentials]" = None,
 ):
     """
     Download Sentinel-2 products listed in *catalog_json*.
@@ -666,11 +667,20 @@ def run_download(
         Optional boto3 S3 resource. Defaults to the module-level `s3`
         (built from env vars or a previously-passed SentinelCredentials
         via build_clients()).
+    credentials:
+        Optional SentinelCredentials for explicit client construction
+        (e.g. Colab). Used to build an S3 resource via build_clients()
+        when `s3` is not explicitly passed. Ignored if `s3` is given.
     """
     # Resolve via globals() rather than a bound default, so patches to the
     # module-level attribute (aquamatch.sentinel_data.s3) are still picked
     # up at call time when no explicit override is given.
-    _s3 = s3 if s3 is not None else globals()["s3"]
+    if s3 is not None:
+        _s3 = s3
+    elif credentials is not None:
+        _, _, _s3 = build_clients(credentials)
+    else:
+        _s3 = globals()["s3"]
 
     with open(catalog_json, "r") as f:
         catalog_data = json.load(f)
@@ -758,16 +768,16 @@ def run_download(
 
 
 def run_sentinel_pipeline(
-    csv: "Path | str | None" = None,
-    catalog_json: "Path | str | None" = None,
-    output_dir: "Path | str | None" = None,
-    time_delta: int | None = None,
-    cloud_cover: int | None = None,
-    strategy: "str | None" = None,
-    max_per_date: "int | None" = None,
-    max_cloud_cover: "int | None" = None,
-    download_scl: bool | None = None,
-    mode: str = "all",
+        csv: "Path | str | None" = None,
+        catalog_json: "Path | str | None" = None,
+        output_dir: "Path | str | None" = None,
+        time_delta: int | None = None,
+        cloud_cover: int | None = None,
+        strategy: "str | None" = None,
+        max_per_date: "int | None" = None,
+        max_cloud_cover: "int | None" = None,
+        download_scl: bool | None = None,
+        mode: str = "all",
 ) -> dict:
     """
     Run the Sentinel-2 catalog and/or download pipeline and return a status dict.
