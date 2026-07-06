@@ -594,6 +594,7 @@ def run_download(
     max_per_date: int = 1,
     max_cloud_cover: "int | None" = None,
     download_scl: bool = True,
+    s3=None,
 ):
     """
     Download Sentinel-2 products listed in *catalog_json*.
@@ -628,7 +629,16 @@ def run_download(
         ``None`` means no additional filtering beyond the search ceiling.
     download_scl:
         If ``True``, download the SCL GeoTIFF alongside each SAFE product.
+    s3:
+        Optional boto3 S3 resource. Defaults to the module-level `s3`
+        (built from env vars or a previously-passed SentinelCredentials
+        via build_clients()).
     """
+    # Resolve via globals() rather than a bound default, so patches to the
+    # module-level attribute (aquamatch.sentinel_data.s3) are still picked
+    # up at call time when no explicit override is given.
+    _s3 = s3 if s3 is not None else globals()["s3"]
+
     with open(catalog_json, "r") as f:
         catalog_data = json.load(f)
 
@@ -672,7 +682,7 @@ def run_download(
             try:
                 if not status["safe_exists"]:
                     logger.info(f"[{field_date}] Baixando {product_id}...")
-                    download_product(s3.Bucket("eodata"), product_path, output_dir)
+                    download_product(_s3.Bucket("eodata"), product_path, output_dir)
                     stats["safe_downloaded"] += 1
                     logger.info(f"✓ SAFE baixado: {product_id}")
                 else:
