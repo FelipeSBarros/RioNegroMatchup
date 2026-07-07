@@ -6,41 +6,72 @@ import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 import boto3
 import pandas as pd
 import requests
-from dotenv import load_dotenv
 from pystac_client import Client
 from sentinelhub import CRS, BBox, DataCollection, SHConfig, SentinelHubCatalog
+
+from aquamatch.credentials import SentinelCredentials
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
-config = SHConfig()
-config.sh_client_id = os.getenv("SH_CLIENT_ID")
-config.sh_client_secret = os.getenv("SH_CLIENT_SECRET")
-config.sh_base_url = "https://sh.dataspace.copernicus.eu"
-config.sh_token_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
-
-catalog = SentinelHubCatalog(config=config)
-
 earthsearch_catalog_url = "https://earth-search.aws.element84.com/v1"
-client = Client.open(earthsearch_catalog_url)
-
-# AWS Dataspace
-s3 = boto3.resource(
-    "s3",
-    endpoint_url="https://eodata.dataspace.copernicus.eu",
-    aws_access_key_id=os.getenv("DATASPACE_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("DATASPACE_SECRET_KEY"),
-    region_name="default",
-)
 
 # Subdirectory name used for all SCL GeoTIFF files under the download root.
 SCL_SUBDIR = "scl"
+
+
+def _build_sh_catalog(creds: SentinelCredentials) -> SentinelHubCatalog:
+    """Build a SentinelHubCatalog from resolved credentials. No network call —
+    SHConfig/SentinelHubCatalog construction is purely local."""
+    sh_config = SHConfig()
+    sh_config.sh_client_id = creds.sh_client_id
+    sh_config.sh_client_secret = creds.sh_client_secret
+    sh_config.sh_base_url = creds.sh_base_url
+    sh_config.sh_token_url = creds.sh_token_url
+    return SentinelHubCatalog(config=sh_config)
+
+
+def _build_stac_client() -> Client:
+    """Open the EarthSearch STAC client. NOTE: this performs a real HTTP
+    request to fetch the catalog root document — call only when a STAC
+    client is actually needed (search_images path), not just to reach s3."""
+    return Client.open(earthsearch_catalog_url)
+
+
+def _build_s3_resource(creds: SentinelCredentials):
+    """Build the Dataspace S3 resource from resolved credentials. No
+    network call — boto3.resource() construction is lazy/local."""
+    return boto3.resource(
+        "s3",
+        endpoint_url="https://eodata.dataspace.copernicus.eu",
+        aws_access_key_id=creds.dataspace_access_key,
+        aws_secret_access_key=creds.dataspace_secret_key,
+        region_name="default",
+    )
+
+
+def build_clients(credentials: Optional[SentinelCredentials] = None):
+    """Build (catalog, client, s3) from explicit credentials, or fall back to env vars.
+
+    Kept as a single combinator for the module-level default construction
+    and for build_catalog(), which genuinely needs both catalog and client.
+    Callers that only need one of the three (e.g. run_download() only
+    needs s3) should call the specific _build_*() helper directly instead,
+    to avoid _build_stac_client()'s network round-trip when it isn't needed.
+    """
+    creds = credentials or SentinelCredentials.from_env()
+    catalog_ = _build_sh_catalog(creds)
+    client_ = _build_stac_client()
+    s3_ = _build_s3_resource(creds)
+    return catalog_, client_, s3_
+
+
+catalog, client, s3 = build_clients()
 
 
 def _tile_from_scene_id(scene_id: str) -> str | None:
@@ -116,12 +147,35 @@ def create_bbox_from_point(lon: float, lat: float, buffer_degrees=0.01):
     )
 
 
-def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
+def search_images(
+    bbox_geometry,
+    date: str,
+    time_delta: int,
+    cloud_cover: int,
+    catalog=None,
+    client=None,
+):
     """
     Busca imagens Sentinel-2 L1C ± time_delta dias da data de campo,
     e para cada cena L1C encontrada, busca a cena L2A correspondente
     pela mesma data de aquisição.
+
+    Parameters
+    ----------
+    catalog:
+        Optional SentinelHubCatalog instance. Defaults to the module-level
+        `catalog` (built from env vars or a previously-passed
+        SentinelCredentials via build_clients()).
+    client:
+        Optional pystac_client.Client instance. Defaults to the
+        module-level `client`.
     """
+    # Resolve via globals() rather than a bound default, so patches to the
+    # module-level attribute (aquamatch.sentinel_data.catalog / .client)
+    # are still picked up at call time when no explicit override is given.
+    _catalog = catalog if catalog is not None else globals()["catalog"]
+    _client = client if client is not None else globals()["client"]
+
     date_obj = datetime.fromisoformat(date)
     start = (date_obj - timedelta(days=time_delta)).strftime("%Y-%m-%d")
     end = (date_obj + timedelta(days=time_delta)).strftime("%Y-%m-%d")
@@ -129,7 +183,7 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
     logger.info(f"Buscando imagens entre {start} e {end} (cloud < {cloud_cover}%)")
 
     l1c_results = list(
-        catalog.search(
+        _catalog.search(
             DataCollection.SENTINEL2_L1C,
             bbox=bbox_geometry,
             time=(start, end),
@@ -144,7 +198,6 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
     items = []
     for item in l1c_results:
         item_id = item["id"]
-
         acquisition_datetime = item["properties"]["datetime"]
         acquisition_date = acquisition_datetime[:10]
 
@@ -153,7 +206,7 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
         )
 
         l2a_results = list(
-            client.search(
+            _client.search(
                 collections=["sentinel-2-l2a"],
                 bbox=bbox_geometry,
                 datetime=f"{acquisition_date}/{acquisition_date}",
@@ -191,7 +244,13 @@ def search_images(bbox_geometry, date: str, time_delta: int, cloud_cover: int):
     return items
 
 
-def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=10):
+def build_catalog(
+    csv_file: Path,
+    output_json: Path,
+    time_delta=1,
+    cloud_cover=10,
+    credentials: "Optional[SentinelCredentials]" = None,
+):
     """
     Search for Sentinel-2 scenes matching each field date in *csv_file* and
     write a catalog JSON to *output_json*.
@@ -220,7 +279,26 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
         - ``href``        — S3/CDSE download URL for the SAFE product
         - ``delta_days``  — absolute difference in days from the field date
         - ``l2a_scl``     — matching SCL asset URL, or ``None``
+
+    Parameters
+    ----------
+    credentials:
+        Optional SentinelCredentials for explicit client construction
+        (e.g. Colab, or any environment where env vars aren't set).
+        When provided, ``build_clients(credentials)`` is called once and
+        the resulting catalog/client are reused for every field date in
+        this call — not rebuilt per row. When ``None`` (default),
+        :func:`search_images` falls back to its own resolution
+        (module-level ``catalog``/``client`` globals), matching current
+        behaviour exactly.
     """
+    # Resolve once, up front — reused across every unique (date, location)
+    # row below rather than rebuilt per row.
+    _catalog = None
+    _client = None
+    if credentials is not None:
+        _catalog, _client, _ = build_clients(credentials)
+
     df = pd.read_csv(csv_file, sep=None, engine="python")
     if "date" not in df.columns:
         raise ValueError("date column not found in CSV")
@@ -254,7 +332,14 @@ def build_catalog(csv_file: Path, output_json: Path, time_delta=1, cloud_cover=1
             f"Processando data {field_date} | lon={row['longitud']} lat={row['latitud']}"
             + (f" | tile={expected_tile}" if filter_by_tile else "")
         )
-        images = search_images(bbox_geometry, field_date, time_delta, cloud_cover)
+        images = search_images(
+            bbox_geometry,
+            field_date,
+            time_delta,
+            cloud_cover,
+            catalog=_catalog,
+            client=_client,
+        )
 
         for img in images:
             scene_id = img["id"]
@@ -566,41 +651,28 @@ def run_download(
     max_per_date: int = 1,
     max_cloud_cover: "int | None" = None,
     download_scl: bool = True,
+    s3=None,
+    credentials: "Optional[SentinelCredentials]" = None,
 ):
     """
-    Download Sentinel-2 products listed in *catalog_json*.
-
-    The catalog is expected to use the bucketed ``images_found`` schema
-    produced by :func:`build_catalog`::
-
-        {
-            "same_day":  [...],
-            "previous":  [...],
-            "posterior": [...]
-        }
-
-    Scene selection is delegated to :func:`_select_scenes`.
-
+    ...
     Parameters
     ----------
-    catalog_json:
-        Path to the catalog JSON file produced by :func:`build_catalog`.
-    output_dir:
-        Root directory for downloaded SAFE products and SCL files.
-    strategy:
-        Download selection strategy — passed directly to
-        :func:`_select_scenes`.  One of ``"best"``, ``"all"``,
-        ``"same_day"``, ``"previous"``, ``"posterior"``.
-        Defaults to ``"best"``.
-    max_per_date:
-        Maximum number of scenes to download per field date.
-        Ignored when ``strategy="all"``.  Defaults to ``1``.
-    max_cloud_cover:
-        Optional secondary cloud cover ceiling applied at download time.
-        ``None`` means no additional filtering beyond the search ceiling.
-    download_scl:
-        If ``True``, download the SCL GeoTIFF alongside each SAFE product.
+    ...
+    credentials:
+        Optional SentinelCredentials. Used to build an S3 resource via
+        _build_s3_resource() directly — NOT via build_clients() — since
+        run_download() never needs a STAC client, and building one would
+        cost an unnecessary network round-trip to EarthSearch. Ignored
+        if `s3` is given.
     """
+    if s3 is not None:
+        _s3 = s3
+    elif credentials is not None:
+        _s3 = _build_s3_resource(credentials)
+    else:
+        _s3 = globals()["s3"]
+
     with open(catalog_json, "r") as f:
         catalog_data = json.load(f)
 
@@ -644,7 +716,7 @@ def run_download(
             try:
                 if not status["safe_exists"]:
                     logger.info(f"[{field_date}] Baixando {product_id}...")
-                    download_product(s3.Bucket("eodata"), product_path, output_dir)
+                    download_product(_s3.Bucket("eodata"), product_path, output_dir)
                     stats["safe_downloaded"] += 1
                     logger.info(f"✓ SAFE baixado: {product_id}")
                 else:
@@ -697,6 +769,7 @@ def run_sentinel_pipeline(
     max_cloud_cover: "int | None" = None,
     download_scl: bool | None = None,
     mode: str = "all",
+    credentials: "SentinelCredentials | dict | None" = None,
 ) -> dict:
     """
     Run the Sentinel-2 catalog and/or download pipeline and return a status dict.
@@ -734,6 +807,13 @@ def run_sentinel_pipeline(
     mode:
         Which pipeline stages to run.  One of ``"all"``, ``"catalog"``,
         or ``"download"``.  Defaults to ``"all"``.
+    credentials:
+        Optional SentinelCredentials instance, or a plain dict with the
+        same field names (e.g. {"sh_client_id": "...", "dataspace_access_key": "..."}),
+        for explicit client construction (e.g. Colab). Forwarded to both
+        build_catalog() and run_download() as-is. When None (default),
+        both fall back to their own module-level client resolution —
+        unchanged behaviour.
 
     Returns
     -------
@@ -753,6 +833,18 @@ def run_sentinel_pipeline(
 
     _s = SentinelSection()
     _d = DownloadSection()
+
+    # --- Normalise credentials: accept a SentinelCredentials instance,
+    # a plain dict, or None. A dict is converted once here so the exact
+    # same SentinelCredentials object is reused by both build_catalog()
+    # and run_download() below, rather than each call constructing its own.
+    _credentials = None
+    if credentials is not None:
+        _credentials = (
+            credentials
+            if isinstance(credentials, SentinelCredentials)
+            else SentinelCredentials(**credentials)
+        )
 
     unique_csv_path = Path(csv) if csv is not None else Path(_s.csv)
     catalog_json_path = (
@@ -784,6 +876,7 @@ def run_sentinel_pipeline(
                 output_json=catalog_json_path,
                 time_delta=time_delta,
                 cloud_cover=cloud_cover,
+                credentials=_credentials,
             )
             outputs["catalog_json"] = catalog_json_path
 
@@ -799,6 +892,7 @@ def run_sentinel_pipeline(
                 max_per_date=_max_per_date,
                 max_cloud_cover=_max_cloud_cover,
                 download_scl=_download_scl,
+                credentials=_credentials,
             )
             outputs["output_dir"] = output_dir_path
             outputs["download_stats"] = download_stats
@@ -883,7 +977,79 @@ def _build_sentinel_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional secondary cloud cover ceiling applied at download time.",
     )
+
+    # --- Credentials overrides (Task 8) ---
+    # All default to None. None here means "not overridden on the CLI";
+    # the actual env-var fallback happens in _credentials_from_cli_args(),
+    # not in argparse itself.
+    parser.add_argument(
+        "--sh-client-id",
+        default=None,
+        help="Sentinel Hub client ID. Overrides SH_CLIENT_ID from .env when set.",
+    )
+    parser.add_argument(
+        "--sh-client-secret",
+        default=None,
+        help="Sentinel Hub client secret. Overrides SH_CLIENT_SECRET from .env when set.",
+    )
+    parser.add_argument(
+        "--dataspace-access-key",
+        default=None,
+        help=(
+            "Copernicus Dataspace S3 access key. "
+            "Overrides DATASPACE_ACCESS_KEY from .env when set."
+        ),
+    )
+    parser.add_argument(
+        "--dataspace-secret-key",
+        default=None,
+        help=(
+            "Copernicus Dataspace S3 secret key. "
+            "Overrides DATASPACE_SECRET_KEY from .env when set."
+        ),
+    )
     return parser
+
+
+def _credentials_from_cli_args(
+    args: "argparse.Namespace",
+) -> "Optional[SentinelCredentials]":
+    """
+    Build a SentinelCredentials from parsed CLI args, merged on top of
+    the environment — or None if no credential flag was passed at all.
+
+    Design rationale: a CLI user typically wants to override just ONE
+    secret (e.g. --sh-client-id for a quick test) while still relying on
+    .env for everything else. Returning a SentinelCredentials with the
+    other three fields left at None would silently blank those out once
+    build_clients() sees credentials is not None (it then skips
+    from_env() entirely — see Task 6's explicit-wins precedence). So:
+    start from from_env(), then overlay only the CLI-provided fields.
+
+    Returns None (not a SentinelCredentials with all-None fields) when
+    no --sh-client-id / --sh-client-secret / --dataspace-access-key /
+    --dataspace-secret-key flag was given, so the rest of the pipeline
+    falls back to its existing module-level client resolution — fully
+    unchanged behaviour for users who don't touch these new flags.
+    """
+    cli_fields = {
+        "sh_client_id": args.sh_client_id,
+        "sh_client_secret": args.sh_client_secret,
+        "dataspace_access_key": args.dataspace_access_key,
+        "dataspace_secret_key": args.dataspace_secret_key,
+    }
+    if all(v is None for v in cli_fields.values()):
+        return None
+
+    base = SentinelCredentials.from_env()
+    merged = {
+        k: (v if v is not None else getattr(base, k)) for k, v in cli_fields.items()
+    }
+    return SentinelCredentials(
+        sh_base_url=base.sh_base_url,
+        sh_token_url=base.sh_token_url,
+        **merged,
+    )
 
 
 if __name__ == "__main__":
@@ -901,6 +1067,7 @@ if __name__ == "__main__":
         max_cloud_cover=args.max_cloud_cover,
         download_scl=args.download_scl,
         mode=args.mode,
+        credentials=_credentials_from_cli_args(args),
     )
     if result["status"] != "success":
         logger.error(f"Pipeline failed: {result['error']}")
