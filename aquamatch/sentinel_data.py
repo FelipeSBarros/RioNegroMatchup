@@ -124,12 +124,12 @@ def create_bbox_from_point(lon: float, lat: float, buffer_degrees=0.01):
 
 
 def search_images(
-        bbox_geometry,
-        date: str,
-        time_delta: int,
-        cloud_cover: int,
-        catalog=None,
-        client=None,
+    bbox_geometry,
+    date: str,
+    time_delta: int,
+    cloud_cover: int,
+    catalog=None,
+    client=None,
 ):
     """
     Busca imagens Sentinel-2 L1C ± time_delta dias da data de campo,
@@ -221,11 +221,11 @@ def search_images(
 
 
 def build_catalog(
-        csv_file: Path,
-        output_json: Path,
-        time_delta=1,
-        cloud_cover=10,
-        credentials: "Optional[SentinelCredentials]" = None,
+    csv_file: Path,
+    output_json: Path,
+    time_delta=1,
+    cloud_cover=10,
+    credentials: "Optional[SentinelCredentials]" = None,
 ):
     """
     Search for Sentinel-2 scenes matching each field date in *csv_file* and
@@ -501,8 +501,8 @@ def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -
     safe_folder = Path(output_dir) / product_id
     safe_file = Path(output_dir) / f"{product_id}.SAFE"
     safe_exists = (
-                          safe_folder.exists() and safe_folder.is_dir() and any(safe_folder.iterdir())
-                  ) or safe_file.exists()
+        safe_folder.exists() and safe_folder.is_dir() and any(safe_folder.iterdir())
+    ) or safe_file.exists()
 
     # Verifica SCL apenas se necessário
     scl_exists = None
@@ -523,10 +523,10 @@ def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -
 
 
 def _select_scenes(
-        images_found: "dict | list",
-        strategy: str = "best",
-        max_per_date: int = 1,
-        max_cloud_cover: "float | None" = None,
+    images_found: "dict | list",
+    strategy: str = "best",
+    max_per_date: int = 1,
+    max_cloud_cover: "float | None" = None,
 ) -> list[dict]:
     """
     Select scenes to download from an ``images_found`` entry.
@@ -621,14 +621,14 @@ def _select_scenes(
 
 
 def run_download(
-        catalog_json: Path,
-        output_dir: Path,
-        strategy: str = "best",
-        max_per_date: int = 1,
-        max_cloud_cover: "int | None" = None,
-        download_scl: bool = True,
-        s3=None,
-        credentials: "Optional[SentinelCredentials]" = None,
+    catalog_json: Path,
+    output_dir: Path,
+    strategy: str = "best",
+    max_per_date: int = 1,
+    max_cloud_cover: "int | None" = None,
+    download_scl: bool = True,
+    s3=None,
+    credentials: "Optional[SentinelCredentials]" = None,
 ):
     """
     Download Sentinel-2 products listed in *catalog_json*.
@@ -768,17 +768,17 @@ def run_download(
 
 
 def run_sentinel_pipeline(
-        csv: "Path | str | None" = None,
-        catalog_json: "Path | str | None" = None,
-        output_dir: "Path | str | None" = None,
-        time_delta: int | None = None,
-        cloud_cover: int | None = None,
-        strategy: "str | None" = None,
-        max_per_date: "int | None" = None,
-        max_cloud_cover: "int | None" = None,
-        download_scl: bool | None = None,
-        mode: str = "all",
-        credentials: "SentinelCredentials | dict | None" = None,
+    csv: "Path | str | None" = None,
+    catalog_json: "Path | str | None" = None,
+    output_dir: "Path | str | None" = None,
+    time_delta: int | None = None,
+    cloud_cover: int | None = None,
+    strategy: "str | None" = None,
+    max_per_date: "int | None" = None,
+    max_cloud_cover: "int | None" = None,
+    download_scl: bool | None = None,
+    mode: str = "all",
+    credentials: "SentinelCredentials | dict | None" = None,
 ) -> dict:
     """
     Run the Sentinel-2 catalog and/or download pipeline and return a status dict.
@@ -986,7 +986,79 @@ def _build_sentinel_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional secondary cloud cover ceiling applied at download time.",
     )
+
+    # --- Credentials overrides (Task 8) ---
+    # All default to None. None here means "not overridden on the CLI";
+    # the actual env-var fallback happens in _credentials_from_cli_args(),
+    # not in argparse itself.
+    parser.add_argument(
+        "--sh-client-id",
+        default=None,
+        help="Sentinel Hub client ID. Overrides SH_CLIENT_ID from .env when set.",
+    )
+    parser.add_argument(
+        "--sh-client-secret",
+        default=None,
+        help="Sentinel Hub client secret. Overrides SH_CLIENT_SECRET from .env when set.",
+    )
+    parser.add_argument(
+        "--dataspace-access-key",
+        default=None,
+        help=(
+            "Copernicus Dataspace S3 access key. "
+            "Overrides DATASPACE_ACCESS_KEY from .env when set."
+        ),
+    )
+    parser.add_argument(
+        "--dataspace-secret-key",
+        default=None,
+        help=(
+            "Copernicus Dataspace S3 secret key. "
+            "Overrides DATASPACE_SECRET_KEY from .env when set."
+        ),
+    )
     return parser
+
+
+def _credentials_from_cli_args(
+    args: "argparse.Namespace",
+) -> "Optional[SentinelCredentials]":
+    """
+    Build a SentinelCredentials from parsed CLI args, merged on top of
+    the environment — or None if no credential flag was passed at all.
+
+    Design rationale: a CLI user typically wants to override just ONE
+    secret (e.g. --sh-client-id for a quick test) while still relying on
+    .env for everything else. Returning a SentinelCredentials with the
+    other three fields left at None would silently blank those out once
+    build_clients() sees credentials is not None (it then skips
+    from_env() entirely — see Task 6's explicit-wins precedence). So:
+    start from from_env(), then overlay only the CLI-provided fields.
+
+    Returns None (not a SentinelCredentials with all-None fields) when
+    no --sh-client-id / --sh-client-secret / --dataspace-access-key /
+    --dataspace-secret-key flag was given, so the rest of the pipeline
+    falls back to its existing module-level client resolution — fully
+    unchanged behaviour for users who don't touch these new flags.
+    """
+    cli_fields = {
+        "sh_client_id": args.sh_client_id,
+        "sh_client_secret": args.sh_client_secret,
+        "dataspace_access_key": args.dataspace_access_key,
+        "dataspace_secret_key": args.dataspace_secret_key,
+    }
+    if all(v is None for v in cli_fields.values()):
+        return None
+
+    base = SentinelCredentials.from_env()
+    merged = {
+        k: (v if v is not None else getattr(base, k)) for k, v in cli_fields.items()
+    }
+    return SentinelCredentials(
+        sh_base_url=base.sh_base_url,
+        sh_token_url=base.sh_token_url,
+        **merged,
+    )
 
 
 if __name__ == "__main__":
@@ -1004,6 +1076,7 @@ if __name__ == "__main__":
         max_cloud_cover=args.max_cloud_cover,
         download_scl=args.download_scl,
         mode=args.mode,
+        credentials=_credentials_from_cli_args(args),
     )
     if result["status"] != "success":
         logger.error(f"Pipeline failed: {result['error']}")
