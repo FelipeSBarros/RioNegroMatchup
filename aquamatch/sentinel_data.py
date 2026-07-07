@@ -778,6 +778,7 @@ def run_sentinel_pipeline(
         max_cloud_cover: "int | None" = None,
         download_scl: bool | None = None,
         mode: str = "all",
+        credentials: "SentinelCredentials | dict | None" = None,
 ) -> dict:
     """
     Run the Sentinel-2 catalog and/or download pipeline and return a status dict.
@@ -815,6 +816,13 @@ def run_sentinel_pipeline(
     mode:
         Which pipeline stages to run.  One of ``"all"``, ``"catalog"``,
         or ``"download"``.  Defaults to ``"all"``.
+    credentials:
+        Optional SentinelCredentials instance, or a plain dict with the
+        same field names (e.g. {"sh_client_id": "...", "dataspace_access_key": "..."}),
+        for explicit client construction (e.g. Colab). Forwarded to both
+        build_catalog() and run_download() as-is. When None (default),
+        both fall back to their own module-level client resolution —
+        unchanged behaviour.
 
     Returns
     -------
@@ -834,6 +842,18 @@ def run_sentinel_pipeline(
 
     _s = SentinelSection()
     _d = DownloadSection()
+
+    # --- Normalise credentials: accept a SentinelCredentials instance,
+    # a plain dict, or None. A dict is converted once here so the exact
+    # same SentinelCredentials object is reused by both build_catalog()
+    # and run_download() below, rather than each call constructing its own.
+    _credentials = None
+    if credentials is not None:
+        _credentials = (
+            credentials
+            if isinstance(credentials, SentinelCredentials)
+            else SentinelCredentials(**credentials)
+        )
 
     unique_csv_path = Path(csv) if csv is not None else Path(_s.csv)
     catalog_json_path = (
@@ -865,6 +885,7 @@ def run_sentinel_pipeline(
                 output_json=catalog_json_path,
                 time_delta=time_delta,
                 cloud_cover=cloud_cover,
+                credentials=_credentials,
             )
             outputs["catalog_json"] = catalog_json_path
 
@@ -880,6 +901,7 @@ def run_sentinel_pipeline(
                 max_per_date=_max_per_date,
                 max_cloud_cover=_max_cloud_cover,
                 download_scl=_download_scl,
+                credentials=_credentials,
             )
             outputs["output_dir"] = output_dir_path
             outputs["download_stats"] = download_stats
