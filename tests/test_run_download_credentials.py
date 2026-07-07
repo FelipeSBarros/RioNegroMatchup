@@ -24,8 +24,6 @@ access or credentials used.
 from __future__ import annotations
 
 import inspect
-import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -33,49 +31,17 @@ import pytest
 from aquamatch.credentials import SentinelCredentials
 from aquamatch.sentinel_data import run_download
 
+from .conftest import _fake_s3_with_bucket, _make_catalog
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-_SCENE_ID = "S2A_MSIL1C_20240315T135111_N0500_R024_T21HUD_20240315T160000"
 
 _NOT_DOWNLOADED_STATUS = {
     "safe_exists": False,
     "scl_exists": False,
     "all_downloaded": False,
 }
-
-
-def _make_catalog(tmp_path: Path) -> Path:
-    catalog_data = [
-        {
-            "field_date": "2024-03-15",
-            "images_found": {
-                "same_day": [
-                    {
-                        "id": _SCENE_ID,
-                        "href": f"https://eodata.dataspace.copernicus.eu/eodata/{_SCENE_ID}/path",
-                        "l2a_scl": None,
-                        "delta_days": 0,
-                        "cloud_cover": 5,
-                        "datetime": "2024-03-15T13:51:11Z",
-                    }
-                ],
-                "previous": [],
-                "posterior": [],
-            },
-        }
-    ]
-    path = tmp_path / "catalog.json"
-    path.write_text(json.dumps(catalog_data))
-    return path
-
-
-def _fake_s3_with_bucket():
-    fake_bucket = MagicMock(name="fake_bucket")
-    fake_s3 = MagicMock(name="fake_s3")
-    fake_s3.Bucket.return_value = fake_bucket
-    return fake_s3, fake_bucket
 
 
 # ---------------------------------------------------------------------------

@@ -25,8 +25,9 @@ import pytest
 import rasterio
 from rasterio.transform import from_bounds
 
-from aquamatch.acolite_spec import AcoliteConfig, IOConfig
 from aquamatch.scl_water import SCL_WATER_CLASS
+
+from .conftest import _make_cfg, _make_safe
 
 # ---------------------------------------------------------------------------
 # Shared helpers (mirrors pattern from test_acoilite_spec.py)
@@ -36,23 +37,6 @@ _TEST_CRS = "EPSG:32721"
 _W, _S, _E, _N = 500_000.0, 6_350_000.0, 500_300.0, 6_350_300.0
 _SAFE_NAME = "S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD_20230919T094731.SAFE"
 _SCENE_STEM = "S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD_20230919T094731"
-
-
-def _make_safe(tmp_path, name=_SAFE_NAME):
-    safe = tmp_path / name
-    safe.mkdir(parents=True, exist_ok=True)
-    (safe / "dummy.xml").write_text("<root/>")
-    return safe
-
-
-def _make_cfg(tmp_path):
-    exe = tmp_path / "acolite"
-    exe.write_text("#!/bin/sh")
-    exe.chmod(0o755)
-    return AcoliteConfig(
-        acolite_executable=str(exe),
-        io=IOConfig(inputfile="", output=str(tmp_path)),
-    )
 
 
 def _fake_execute_result(safe_path, output_dir):

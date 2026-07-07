@@ -24,15 +24,11 @@ from aquamatch.pipeline_config import (
     main,
 )
 
+from .conftest import _write_yaml
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _write_yaml(tmp_path: Path, content: str) -> Path:
-    p = tmp_path / "config.yaml"
-    p.write_text(content)
-    return p
 
 
 def _make_template(tmp_path: Path) -> Path:
