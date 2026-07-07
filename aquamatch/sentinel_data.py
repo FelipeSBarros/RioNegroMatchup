@@ -25,25 +25,49 @@ earthsearch_catalog_url = "https://earth-search.aws.element84.com/v1"
 SCL_SUBDIR = "scl"
 
 
-def build_clients(credentials: Optional[SentinelCredentials] = None):
-    """Build (catalog, client, s3) from explicit credentials, or fall back to env vars."""
-    creds = credentials or SentinelCredentials.from_env()
-
+def _build_sh_catalog(creds: SentinelCredentials) -> SentinelHubCatalog:
+    """Build a SentinelHubCatalog from resolved credentials. No network call —
+    SHConfig/SentinelHubCatalog construction is purely local."""
     sh_config = SHConfig()
     sh_config.sh_client_id = creds.sh_client_id
     sh_config.sh_client_secret = creds.sh_client_secret
     sh_config.sh_base_url = creds.sh_base_url
     sh_config.sh_token_url = creds.sh_token_url
+    return SentinelHubCatalog(config=sh_config)
 
-    catalog_ = SentinelHubCatalog(config=sh_config)
-    client_ = Client.open(earthsearch_catalog_url)
-    s3_ = boto3.resource(
+
+def _build_stac_client() -> Client:
+    """Open the EarthSearch STAC client. NOTE: this performs a real HTTP
+    request to fetch the catalog root document — call only when a STAC
+    client is actually needed (search_images path), not just to reach s3."""
+    return Client.open(earthsearch_catalog_url)
+
+
+def _build_s3_resource(creds: SentinelCredentials):
+    """Build the Dataspace S3 resource from resolved credentials. No
+    network call — boto3.resource() construction is lazy/local."""
+    return boto3.resource(
         "s3",
         endpoint_url="https://eodata.dataspace.copernicus.eu",
         aws_access_key_id=creds.dataspace_access_key,
         aws_secret_access_key=creds.dataspace_secret_key,
         region_name="default",
     )
+
+
+def build_clients(credentials: Optional[SentinelCredentials] = None):
+    """Build (catalog, client, s3) from explicit credentials, or fall back to env vars.
+
+    Kept as a single combinator for the module-level default construction
+    and for build_catalog(), which genuinely needs both catalog and client.
+    Callers that only need one of the three (e.g. run_download() only
+    needs s3) should call the specific _build_*() helper directly instead,
+    to avoid _build_stac_client()'s network round-trip when it isn't needed.
+    """
+    creds = credentials or SentinelCredentials.from_env()
+    catalog_ = _build_sh_catalog(creds)
+    client_ = _build_stac_client()
+    s3_ = _build_s3_resource(creds)
     return catalog_, client_, s3_
 
 
@@ -631,54 +655,21 @@ def run_download(
     credentials: "Optional[SentinelCredentials]" = None,
 ):
     """
-    Download Sentinel-2 products listed in *catalog_json*.
-
-    The catalog is expected to use the bucketed ``images_found`` schema
-    produced by :func:`build_catalog`::
-
-        {
-            "same_day":  [...],
-            "previous":  [...],
-            "posterior": [...]
-        }
-
-    Scene selection is delegated to :func:`_select_scenes`.
-
+    ...
     Parameters
     ----------
-    catalog_json:
-        Path to the catalog JSON file produced by :func:`build_catalog`.
-    output_dir:
-        Root directory for downloaded SAFE products and SCL files.
-    strategy:
-        Download selection strategy — passed directly to
-        :func:`_select_scenes`.  One of ``"best"``, ``"all"``,
-        ``"same_day"``, ``"previous"``, ``"posterior"``.
-        Defaults to ``"best"``.
-    max_per_date:
-        Maximum number of scenes to download per field date.
-        Ignored when ``strategy="all"``.  Defaults to ``1``.
-    max_cloud_cover:
-        Optional secondary cloud cover ceiling applied at download time.
-        ``None`` means no additional filtering beyond the search ceiling.
-    download_scl:
-        If ``True``, download the SCL GeoTIFF alongside each SAFE product.
-    s3:
-        Optional boto3 S3 resource. Defaults to the module-level `s3`
-        (built from env vars or a previously-passed SentinelCredentials
-        via build_clients()).
+    ...
     credentials:
-        Optional SentinelCredentials for explicit client construction
-        (e.g. Colab). Used to build an S3 resource via build_clients()
-        when `s3` is not explicitly passed. Ignored if `s3` is given.
+        Optional SentinelCredentials. Used to build an S3 resource via
+        _build_s3_resource() directly — NOT via build_clients() — since
+        run_download() never needs a STAC client, and building one would
+        cost an unnecessary network round-trip to EarthSearch. Ignored
+        if `s3` is given.
     """
-    # Resolve via globals() rather than a bound default, so patches to the
-    # module-level attribute (aquamatch.sentinel_data.s3) are still picked
-    # up at call time when no explicit override is given.
     if s3 is not None:
         _s3 = s3
     elif credentials is not None:
-        _, _, _s3 = build_clients(credentials)
+        _s3 = _build_s3_resource(credentials)
     else:
         _s3 = globals()["s3"]
 

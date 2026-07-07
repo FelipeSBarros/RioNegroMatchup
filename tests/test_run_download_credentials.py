@@ -2,17 +2,22 @@
 Unit tests for aquamatch.sentinel_data.run_download() — Task 6.
 
 run_download() must accept an optional `credentials` parameter, used to
-build an S3 resource via build_clients() when `s3` is not explicitly
-passed. Precedence (highest to lowest):
+build an S3 resource via _build_s3_resource() (NOT build_clients()) when
+`s3` is not explicitly passed. Precedence (highest to lowest):
 
   1. explicit `s3` argument (Task 4)      — always wins if given
   2. `credentials` argument (Task 6)      — used to build s3 if s3 is None
   3. module-level `s3` global             — fallback when neither is given
 
-This mirrors build_catalog()'s credentials wiring (Task 5), completing
-the injection seam for the download path.
+IMPORTANT design note: run_download() deliberately calls the narrower
+_build_s3_resource(credentials) helper rather than build_clients(credentials).
+build_clients() also opens a pystac_client.Client (a real HTTP request to
+EarthSearch's catalog root) which run_download() never uses — only s3 is
+needed here. Routing through the narrower helper avoids that unnecessary
+network round-trip. See build_catalog() (Task 5) for the counterpart that
+DOES need build_clients() in full, since it uses both catalog and client.
 
-All S3 interaction and build_clients() are mocked — no real network
+All S3 interaction and _build_s3_resource() are mocked — no real network
 access or credentials used.
 """
 
@@ -22,6 +27,8 @@ import inspect
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from aquamatch.credentials import SentinelCredentials
 from aquamatch.sentinel_data import run_download
@@ -138,13 +145,13 @@ class TestRunDownloadNoOverrides:
 
 
 # ---------------------------------------------------------------------------
-# credentials provided, s3 not given — build via build_clients()
+# credentials provided, s3 not given — build via _build_s3_resource()
 # ---------------------------------------------------------------------------
 
 
 class TestRunDownloadCredentialsOnly:
 
-    def test_build_clients_called_with_credentials(self, tmp_path):
+    def test_build_s3_resource_called_with_credentials(self, tmp_path):
         catalog = _make_catalog(tmp_path)
         creds = SentinelCredentials(dataspace_access_key="explicit-access")
         fake_s3, fake_bucket = _fake_s3_with_bucket()
@@ -153,8 +160,35 @@ class TestRunDownloadCredentialsOnly:
             "aquamatch.sentinel_data.get_download_status",
             return_value=_NOT_DOWNLOADED_STATUS,
         ), patch(
-            "aquamatch.sentinel_data.build_clients",
-            return_value=(MagicMock(), MagicMock(), fake_s3),
+            "aquamatch.sentinel_data._build_s3_resource",
+            return_value=fake_s3,
+        ) as mock_build_s3:
+            run_download(
+                catalog,
+                tmp_path,
+                strategy="best",
+                max_per_date=1,
+                download_scl=False,
+                credentials=creds,
+            )
+
+        mock_build_s3.assert_called_once_with(creds)
+
+    def test_build_clients_is_NOT_called_for_credentials_only_path(self, tmp_path):
+        """The whole point of this design: run_download() must never build
+        a STAC client (build_clients()) just to reach s3 — that would cost
+        an unnecessary network round-trip to EarthSearch."""
+        catalog = _make_catalog(tmp_path)
+        creds = SentinelCredentials(dataspace_access_key="explicit-access")
+        fake_s3, _ = _fake_s3_with_bucket()
+
+        with patch("aquamatch.sentinel_data.download_product"), patch(
+            "aquamatch.sentinel_data.get_download_status",
+            return_value=_NOT_DOWNLOADED_STATUS,
+        ), patch(
+            "aquamatch.sentinel_data._build_s3_resource", return_value=fake_s3
+        ), patch(
+            "aquamatch.sentinel_data.build_clients"
         ) as mock_build_clients:
             run_download(
                 catalog,
@@ -165,7 +199,7 @@ class TestRunDownloadCredentialsOnly:
                 credentials=creds,
             )
 
-        mock_build_clients.assert_called_once_with(creds)
+        mock_build_clients.assert_not_called()
 
     def test_s3_from_credentials_used_for_bucket_call(self, tmp_path):
         catalog = _make_catalog(tmp_path)
@@ -176,8 +210,8 @@ class TestRunDownloadCredentialsOnly:
             "aquamatch.sentinel_data.get_download_status",
             return_value=_NOT_DOWNLOADED_STATUS,
         ), patch(
-            "aquamatch.sentinel_data.build_clients",
-            return_value=(MagicMock(), MagicMock(), fake_s3),
+            "aquamatch.sentinel_data._build_s3_resource",
+            return_value=fake_s3,
         ):
             run_download(
                 catalog,
@@ -204,8 +238,8 @@ class TestRunDownloadCredentialsOnly:
             "aquamatch.sentinel_data.get_download_status",
             return_value=_NOT_DOWNLOADED_STATUS,
         ), patch(
-            "aquamatch.sentinel_data.build_clients",
-            return_value=(MagicMock(), MagicMock(), creds_s3),
+            "aquamatch.sentinel_data._build_s3_resource",
+            return_value=creds_s3,
         ):
             run_download(
                 catalog,
@@ -236,7 +270,7 @@ class TestRunDownloadPrecedence:
         with patch("aquamatch.sentinel_data.download_product") as mock_dl, patch(
             "aquamatch.sentinel_data.get_download_status",
             return_value=_NOT_DOWNLOADED_STATUS,
-        ), patch("aquamatch.sentinel_data.build_clients") as mock_build_clients:
+        ), patch("aquamatch.sentinel_data._build_s3_resource") as mock_build_s3:
             run_download(
                 catalog,
                 tmp_path,
@@ -247,7 +281,7 @@ class TestRunDownloadPrecedence:
                 credentials=creds,
             )
 
-        mock_build_clients.assert_not_called()
+        mock_build_s3.assert_not_called()
         explicit_s3.Bucket.assert_called_once_with("eodata")
         args, _ = mock_dl.call_args
         assert args[0] is explicit_bucket
@@ -269,8 +303,8 @@ class TestRunDownloadCredentialsRegression:
             "aquamatch.sentinel_data.get_download_status",
             return_value=_NOT_DOWNLOADED_STATUS,
         ), patch(
-            "aquamatch.sentinel_data.build_clients",
-            return_value=(MagicMock(), MagicMock(), fake_s3),
+            "aquamatch.sentinel_data._build_s3_resource",
+            return_value=fake_s3,
         ):
             stats = run_download(
                 catalog,
@@ -291,11 +325,15 @@ class TestRunDownloadCredentialsRegression:
             assert key in stats
         assert stats["safe_downloaded"] == 1
 
-    def test_already_downloaded_skips_build_clients_call_path_too(self, tmp_path):
-        """Even with credentials passed, if the status check says everything
-        is already downloaded, s3.Bucket()/download_product() must not be
-        reached — build_clients() itself still runs (credentials resolved
-        eagerly up front), but no download attempt follows."""
+    def test_already_downloaded_still_resolves_s3_eagerly(self, tmp_path):
+        """Design note (resolved): _build_s3_resource() is still called
+        eagerly up front, before checking any scene's download status —
+        it's local/lazy (boto3.resource() construction, no network), so
+        there's no cost to defer here. What WAS fixed is that this no
+        longer routes through build_clients(), which would have also
+        opened a STAC client (a real network call) never used by this
+        function. s3.Bucket()/download_product() still correctly aren't
+        reached when nothing needs downloading."""
         catalog = _make_catalog(tmp_path)
         creds = SentinelCredentials(dataspace_access_key="explicit-access")
         fake_s3, fake_bucket = _fake_s3_with_bucket()
@@ -308,9 +346,9 @@ class TestRunDownloadCredentialsRegression:
                 "all_downloaded": True,
             },
         ), patch(
-            "aquamatch.sentinel_data.build_clients",
-            return_value=(MagicMock(), MagicMock(), fake_s3),
-        ):
+            "aquamatch.sentinel_data._build_s3_resource",
+            return_value=fake_s3,
+        ) as mock_build_s3:
             stats = run_download(
                 catalog,
                 tmp_path,
@@ -320,6 +358,7 @@ class TestRunDownloadCredentialsRegression:
                 credentials=creds,
             )
 
+        mock_build_s3.assert_called_once_with(creds)
         fake_s3.Bucket.assert_not_called()
         mock_dl.assert_not_called()
         assert stats["already_downloaded"] == 1
