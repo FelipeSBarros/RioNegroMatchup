@@ -51,6 +51,97 @@ DATASPACE_SECRET_KEY=your_copernicus_dataspace_secret_key
 
 ---
 
+### Passing credentials explicitly (e.g. Colab, shared notebooks)
+
+The `.env` file above works well for a persistent local project, but some  environments — Google Colab, CI jobs, notebooks shared between people —  don't have a persistent `.env` file, or need different credentials per run. 
+For these cases, credentials can be passed explicitly instead of (or alongside) environment variables.
+
+#### `SentinelCredentials`
+
+```python
+from aquamatch.credentials import SentinelCredentials
+
+creds = SentinelCredentials(
+    sh_client_id="...",
+    sh_client_secret="...",
+    dataspace_access_key="...",
+    dataspace_secret_key="...",
+)
+```
+
+Any field left unset defaults to `None`. `SentinelCredentials.from_env()` builds the same object by reading `SH_CLIENT_ID`, `SH_CLIENT_SECRET`, `DATASPACE_ACCESS_KEY`, `DATASPACE_SECRET_KEY` from the environment — this is what happens automatically whenever no explicit credentials are given anywhere in the call chain.
+
+#### Passing credentials to the full pipeline
+
+`run_sentinel_pipeline()` accepts `credentials` as either a `SentinelCredentials` instance or a plain dict:
+
+```python
+from aquamatch import run_sentinel_pipeline
+
+run_sentinel_pipeline(
+    mode="all",
+    credentials={
+        "sh_client_id": "...",
+        "sh_client_secret": "...",
+        "dataspace_access_key": "...",
+        "dataspace_secret_key": "...",
+    },
+)
+```
+
+When `credentials` is passed, it's used to build a fresh SentinelHub catalog client, EarthSearch STAC client, and S3 resource for that call — bypassing whatever `.env`/module-level defaults would otherwise apply.
+When omitted (the default, `None`), behaviour is unchanged: the module-level clients built once at import time (from `.env`, if present) are used, exactly as before this feature existed.
+
+#### Lower-level functions
+
+The same `credentials` parameter is available on the individual building blocks, for finer control:
+
+```python
+from aquamatch.sentinel_data import build_catalog, run_download
+from aquamatch.credentials import SentinelCredentials
+
+creds = SentinelCredentials(
+    sh_client_id="...",
+    sh_client_secret="...",
+    dataspace_access_key="...",
+    dataspace_secret_key="...",
+)
+
+build_catalog(csv_file="...", output_json="...", credentials=creds)
+run_download(catalog_json="...", output_dir="...", credentials=creds)
+```
+
+`run_download()` also accepts a plain boto3 `s3` resource directly (`run_download(..., s3=my_s3_resource)`), which takes precedence over `credentials` if both are given — useful if you already have an authenticated S3 session managed elsewhere (e.g. an IAM role in a managed notebook environment).
+
+> **Note:** `run_download()` only needs S3 access, so passing
+> `credentials` there builds *just* the S3 resource — it never opens a
+> connection to the SentinelHub or EarthSearch catalogs. This means
+> `run_download(..., credentials=...)` works even in network-restricted
+> environments where only the Copernicus Dataspace S3 endpoint is
+> reachable.
+
+#### CLI
+
+The same overrides are available from the command line:
+
+```bash
+python aquamatch/sentinel_data.py --mode all \
+  --sh-client-id "..." \
+  --sh-client-secret "..." \
+  --dataspace-access-key "..." \
+  --dataspace-secret-key "..."
+```
+
+Any of the four flags can be given individually — unset ones fall back to `.env`/environment variables rather than being blanked out. So overriding just `--sh-client-id` on the command line while keeping the Dataspace keys in `.env` works as expected.
+
+#### Precedence summary
+
+From highest to lowest priority:
+
+1. An explicit client object passed directly (`s3=...` on `run_download()`, or `catalog=...`/`client=...` on lower-level search functions).
+2. `credentials` passed explicitly — as a `SentinelCredentials` instance, a plain dict, or CLI flags (partial CLI flags merge with `.env` for any field not overridden).
+3. Environment variables via `.env` — the original, still-default behaviour.
+
 ## Step-by-step Workflow
 
 ### Step 1 — Prepare in situ data
