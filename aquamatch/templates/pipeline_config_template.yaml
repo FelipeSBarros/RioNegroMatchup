@@ -11,7 +11,7 @@
 #     python -m aquamatch.pipeline_config --run campaign_2025.yaml
 # =============================================================================
 
-campaign_name: rio_negro_2025
+campaign_name: campaign
 description: "Sentinel-2 / in situ water quality matchup"
 
 # =============================================================================
