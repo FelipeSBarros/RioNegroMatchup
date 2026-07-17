@@ -17,16 +17,7 @@ from aquamatch.pipeline_config import (
     PipelineConfig,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _write_yaml(tmp_path: Path, content: str) -> Path:
-    p = tmp_path / "config.yaml"
-    p.write_text(content)
-    return p
-
+from .conftest import _write_yaml
 
 # ---------------------------------------------------------------------------
 # TileEntry — construction and defaults

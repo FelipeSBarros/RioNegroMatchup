@@ -313,15 +313,7 @@ class TestWithSclPolygon:
 
 from unittest.mock import patch
 
-
-def _make_safe(
-    tmp_path, name="S2A_MSIL1C_20250801T101031_N0500_R024_T21HUD_20230919T094731.SAFE"
-):
-    """Create a minimal fake SAFE folder on disk."""
-    safe = tmp_path / name
-    safe.mkdir(parents=True, exist_ok=True)
-    (safe / "dummy.xml").write_text("<root/>")
-    return safe
+from .conftest import _make_safe
 
 
 def _make_scl_for_safe(scl_dir, safe_path):
@@ -1232,71 +1224,79 @@ class TestAcoliteConfigValidateNewSubConfigs:
     """
     AcoliteConfig.validate() must propagate errors from S2Config, DsfConfig,
     and ReprojectConfig.  These tests use an invalid sub-config value to
-    confirm the call chain is wired correctly without needing a real executable.
+    confirm the call chain is wired correctly. validate() checks executable
+    existence before delegating to sub-configs, so a real (dummy) executable
+    file is required for the ValueError to actually be reached.
     """
 
-    def _base_cfg(self, **overrides) -> "AcoliteConfig":
+    def _base_cfg(self, tmp_path, **overrides) -> "AcoliteConfig":
+        exe = tmp_path / "acolite"
+        exe.write_text("#!/bin/sh")
+        exe.chmod(0o755)
         return AcoliteConfig(
-            acolite_executable="/home/felipe/Downloads/acolite_py_linux_20260421.0/acolite_py_linux/acolite",
+            acolite_executable=str(exe),
             io=IOConfig(inputfile="", output=""),
             **overrides,
         )
 
-    def test_invalid_s2_target_res_raises_via_validate(self):
-        cfg = self._base_cfg(s2=S2Config(s2_target_res=15))
+    def test_invalid_s2_target_res_raises_via_validate(self, tmp_path):
+        cfg = self._base_cfg(tmp_path, s2=S2Config(s2_target_res=15))
         with pytest.raises(ValueError, match="s2_target_res"):
             cfg.validate()
 
-    def test_invalid_dsf_aot_estimate_raises_via_validate(self):
-        cfg = self._base_cfg(dsf=DsfConfig(dsf_aot_estimate="magic"))
+    def test_invalid_dsf_aot_estimate_raises_via_validate(self, tmp_path):
+        cfg = self._base_cfg(tmp_path, dsf=DsfConfig(dsf_aot_estimate="magic"))
         with pytest.raises(ValueError, match="dsf_aot_estimate"):
             cfg.validate()
 
-    def test_invalid_dsf_spectrum_option_raises_via_validate(self):
-        cfg = self._base_cfg(dsf=DsfConfig(dsf_spectrum_option="unknown"))
+    def test_invalid_dsf_spectrum_option_raises_via_validate(self, tmp_path):
+        cfg = self._base_cfg(tmp_path, dsf=DsfConfig(dsf_spectrum_option="unknown"))
         with pytest.raises(ValueError, match="dsf_spectrum_option"):
             cfg.validate()
 
-    def test_dsf_fixed_aot_out_of_range_raises_via_validate(self):
-        cfg = self._base_cfg(dsf=DsfConfig(dsf_fixed_aot=99.0))
+    def test_dsf_fixed_aot_out_of_range_raises_via_validate(self, tmp_path):
+        cfg = self._base_cfg(tmp_path, dsf=DsfConfig(dsf_fixed_aot=99.0))
         with pytest.raises(ValueError, match="dsf_fixed_aot"):
             cfg.validate()
 
-    def test_reproject_without_epsg_raises_via_validate(self):
-        cfg = self._base_cfg(reproject=ReprojectConfig(reproject_outputs=True))
+    def test_reproject_without_epsg_raises_via_validate(self, tmp_path):
+        cfg = self._base_cfg(tmp_path, reproject=ReprojectConfig(reproject_outputs=True))
         with pytest.raises(ValueError, match="output_projection_epsg"):
             cfg.validate()
 
-    def test_reproject_invalid_resampling_raises_via_validate(self):
+    def test_reproject_invalid_resampling_raises_via_validate(self, tmp_path):
         cfg = self._base_cfg(
+            tmp_path,
             reproject=ReprojectConfig(
                 reproject_outputs=True,
                 output_projection_epsg=32721,
                 output_projection_resampling_method="lanczos",
-            )
+            ),
         )
         with pytest.raises(ValueError, match="output_projection_resampling_method"):
             cfg.validate()
 
-    def test_reproject_negative_resolution_raises_via_validate(self):
+    def test_reproject_negative_resolution_raises_via_validate(self, tmp_path):
         cfg = self._base_cfg(
+            tmp_path,
             reproject=ReprojectConfig(
                 reproject_outputs=True,
                 output_projection_epsg=32721,
                 output_projection_resolution=-5.0,
-            )
+            ),
         )
         with pytest.raises(ValueError, match="output_projection_resolution"):
             cfg.validate()
 
-    def test_blackfill_max_out_of_range_raises_via_validate(self):
-        cfg = self._base_cfg(s2=S2Config(blackfill_max=2.0))
+    def test_blackfill_max_out_of_range_raises_via_validate(self, tmp_path):
+        cfg = self._base_cfg(tmp_path, s2=S2Config(blackfill_max=2.0))
         with pytest.raises(ValueError, match="blackfill_max"):
             cfg.validate()
 
-    def test_valid_new_configs_do_not_raise(self):
+    def test_valid_new_configs_do_not_raise(self, tmp_path):
         """All valid sub-config values must pass validate() without error."""
         cfg = self._base_cfg(
+            tmp_path,
             s2=S2Config(s2_target_res=20),
             dsf=DsfConfig(dsf_fixed_aot=0.1, dsf_aot_estimate="tiled"),
             reproject=ReprojectConfig(

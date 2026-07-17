@@ -27,9 +27,10 @@ import pytest
 import rasterio
 from rasterio.transform import from_bounds
 
-from aquamatch.acolite_spec import AcoliteConfig, IOConfig
 from aquamatch.pipeline_config import TileEntry, TilesSection
 from aquamatch.scl_water import SCL_WATER_CLASS
+
+from .conftest import _make_cfg, _make_safe
 
 # ---------------------------------------------------------------------------
 # Shared test fixtures / helpers
@@ -45,13 +46,6 @@ _SAFE_NAME_2 = "S2A_MSIL1C_20250802T101031_N0500_R024_T21HUD_20230919T094731.SAF
 _SAFE_NAME_HVD = "S2A_MSIL1C_20250801T101031_N0500_R024_T21HVD_20230919T094731.SAFE"
 # Unrecognisable name — no tile extractable
 _SAFE_NAME_UNKNOWN = "unknown_scene.SAFE"
-
-
-def _make_safe(tmp_path, name=_SAFE_NAME):
-    safe = tmp_path / name
-    safe.mkdir(parents=True, exist_ok=True)
-    (safe / "dummy.xml").write_text("<root/>")
-    return safe
 
 
 def _make_scl(scl_dir, safe_path):
@@ -74,16 +68,6 @@ def _make_scl(scl_dir, safe_path):
     ) as dst:
         dst.write(data, 1)
     return scl_path
-
-
-def _make_cfg(tmp_path):
-    exe = tmp_path / "acolite"
-    exe.write_text("#!/bin/sh")
-    exe.chmod(0o755)
-    return AcoliteConfig(
-        acolite_executable=str(exe),
-        io=IOConfig(inputfile="", output=str(tmp_path)),
-    )
 
 
 def _fake_execute(safe_path, output_dir):
