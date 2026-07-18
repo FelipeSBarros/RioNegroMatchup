@@ -70,7 +70,8 @@ def _write_catalog_json(path: Path) -> None:
 
 def _make_safe_dir(output_dir: Path, scene_id: str) -> Path:
     """Create an already-downloaded SAFE folder to trigger skip logic."""
-    safe_dir = output_dir / scene_id
+    core_id = scene_id.split(".")[0]
+    safe_dir = output_dir / f"{core_id}.SAFE"
     safe_dir.mkdir(parents=True, exist_ok=True)
     (safe_dir / "dummy.txt").write_text("x")
     return safe_dir

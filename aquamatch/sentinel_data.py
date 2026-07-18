@@ -521,12 +521,16 @@ def get_download_status(product_id: str, output_dir: Path, download_scl: bool) -
             'all_downloaded': bool  # True if everything needed is already present
         }
     """
-    # Verifica SAFE
-    safe_folder = Path(output_dir) / product_id
-    safe_file = Path(output_dir) / f"{product_id}.SAFE"
-    safe_exists = (
-        safe_folder.exists() and safe_folder.is_dir() and any(safe_folder.iterdir())
-    ) or safe_file.exists()
+    # Verifica SAFE — pastas .SAFE são baixadas aninhadas sob o prefixo
+    # completo da chave S3 (ex.: Sentinel-2/MSI/{L1C|L1C_N0500}/{YYYY}/{MM}/{DD}/
+    # {scene}.SAFE), e o segmento de baseline (L1C vs L1C_N0500) não é
+    # derivável de forma confiável a partir do href do catálogo — por isso
+    # buscamos por nome em vez de reconstruir o caminho.
+    product_core_id = product_id.split(".")[0]
+    safe_matches = list(Path(output_dir).rglob(f"{product_core_id}.SAFE"))
+    safe_exists = any(
+        m.is_file() or (m.is_dir() and any(m.iterdir())) for m in safe_matches
+    )
 
     # Verifica SCL apenas se necessário
     scl_exists = None

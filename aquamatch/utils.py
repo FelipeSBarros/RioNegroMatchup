@@ -109,15 +109,21 @@ def _get_download_status(product_id: str, output_dir: Path, download_scl: bool) 
         "all_downloaded": bool}``. ``scl_exists`` is ``None`` when
         ``download_scl`` is ``False``.
     """
-    safe_folder = Path(output_dir) / product_id
-    safe_file = Path(output_dir) / f"{product_id}.SAFE"
-    safe_exists = (
-        safe_folder.exists() and safe_folder.is_dir() and any(safe_folder.iterdir())
-    ) or safe_file.exists()
+    product_core_id = product_id.split(".")[0]
+
+    # SAFE folders are downloaded nested under the S3 key's full prefix
+    # (e.g. Sentinel-2/MSI/{L1C|L1C_N0500}/{YYYY}/{MM}/{DD}/{scene}.SAFE),
+    # and the baseline segment (L1C vs L1C_N0500) isn't reliably derivable
+    # from the catalog's href — so search by name instead of reconstructing
+    # the path. Mirrors the pattern already used in acolite_spec.py for the
+    # same "find .SAFE folders regardless of nesting" problem.
+    safe_matches = list(Path(output_dir).rglob(f"{product_core_id}.SAFE"))
+    safe_exists = any(
+        m.is_file() or (m.is_dir() and any(m.iterdir())) for m in safe_matches
+    )
 
     scl_exists = None
     if download_scl:
-        product_core_id = product_id.split(".")[0]
         scl_path = Path(output_dir) / _SCL_SUBDIR / f"{product_core_id}_SCL.tif"
         scl_exists = scl_path.exists()
 
@@ -251,6 +257,52 @@ def _rio_prepare(da):
     if da.rio.crs is None:
         return None, None, None
     return da, x_dim, y_dim
+
+
+def _windowed_nanmean(values, row_pos, col_pos, half, n_rows, n_cols):
+    """
+    NaN-aware windowed mean of a 2-D array at a set of pixel positions.
+
+    For each ``(row_pos[i], col_pos[i])`` pair, computes the mean of the
+    ``(2*half+1) x (2*half+1)`` window centered on it (clipped at the
+    array edges), ignoring NaN pixels.
+
+    Parameters
+    ----------
+    values:
+        2-D array (rows, cols) to sample from.
+    row_pos, col_pos:
+        Integer pixel row/column indices, one per output position.
+    half:
+        Half the window side length (``window_size // 2``).
+    n_rows, n_cols:
+        Shape of ``values`` — passed explicitly rather than read from
+        ``values.shape`` since callers already have them on hand.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray]
+        ``(means, n_valid)`` — float64 NaN-aware means and int64 valid-pixel
+        counts, one pair per input position.
+    """
+    import numpy as np
+
+    n = len(row_pos)
+    means = np.full(n, np.nan, dtype="float64")
+    n_valid = np.zeros(n, dtype="int64")
+
+    for i in range(n):
+        r, c = int(row_pos[i]), int(col_pos[i])
+        r0, r1 = max(0, r - half), min(n_rows, r + half + 1)
+        c0, c1 = max(0, c - half), min(n_cols, c + half + 1)
+        window = values[r0:r1, c0:c1]
+        valid = ~np.isnan(window)
+        n_pix = int(valid.sum())
+        n_valid[i] = n_pix
+        if n_pix > 0:
+            means[i] = float(np.nanmean(window))
+
+    return means, n_valid
 
 
 # ---------------------------------------------------------------------------
@@ -781,18 +833,12 @@ def extract_l2w_pixel_values(
             means = np.full(len(out), np.nan, dtype="float64")
             n_valid = np.zeros(len(out), dtype="int64")
 
-            for i in range(len(out)):
-                if not in_bounds[i]:
-                    continue
-                r, c = int(row_pos[i]), int(col_pos[i])
-                r0, r1 = max(0, r - half), min(n_rows, r + half + 1)
-                c0, c1 = max(0, c - half), min(n_cols, c + half + 1)
-                window = values[r0:r1, c0:c1]
-                valid = ~np.isnan(window)
-                n = int(valid.sum())
-                n_valid[i] = n
-                if n > 0:
-                    means[i] = float(np.nanmean(window))
+            if in_bounds.any():
+                sub_means, sub_valid = _windowed_nanmean(
+                    values, row_pos[in_bounds], col_pos[in_bounds], half, n_rows, n_cols
+                )
+                means[in_bounds] = sub_means
+                n_valid[in_bounds] = sub_valid
 
             out[f"{var}_mean"] = means
             out[f"{var}_n_valid_px"] = n_valid
@@ -802,3 +848,495 @@ def extract_l2w_pixel_values(
         return out
     finally:
         ds.close()
+
+
+def extract_datacube_pixel_values(
+    datacube_path: Path | str,
+    stations: pd.DataFrame,
+    variables: Optional[list[str]] = None,
+    window_size: int = 3,
+    lat_col: str = "latitud",
+    lon_col: str = "longitud",
+    date_col: str = "date",
+    time_tolerance_days: int = 0,
+    datacube_crs: str = "EPSG:4326",
+) -> pd.DataFrame:
+    """
+    Extract mean pixel values from a multi-date L2W Zarr datacube, matched
+    per station to its own sampling date.
+
+    This is the multi-scene counterpart to :func:`extract_l2w_pixel_values`:
+    instead of reading one L2W NetCDF for every station regardless of date,
+    it reads a Zarr datacube built by
+    :func:`~aquamatch.acolite_spec.append_l2w_to_datacube` (with a real
+    ``time`` dimension) and, for every row of ``stations``, selects the
+    pixel window at *that row's own* matched time step. Rows sharing the
+    same matched date reuse a single load of that date's 2-D slice.
+
+    Parameters
+    ----------
+    datacube_path:
+        Path to the Zarr datacube (e.g. ``data/data_cube/l2w_datacube.zarr``).
+    stations:
+        DataFrame with one row per station/date, containing at least
+        ``lat_col``, ``lon_col``, and ``date_col``. Returned unmodified
+        except for appended columns.
+    variables:
+        Datacube variables to extract. If ``None``, auto-discovers all
+        variables with ``time``, ``y``, and ``x`` dimensions. If given,
+        filtered to what's actually present.
+    window_size:
+        Side length of the square pixel window. Must be a positive odd
+        integer. Defaults to ``3``.
+    lat_col, lon_col:
+        Station latitude/longitude column names (assumed EPSG:4326).
+        Default to ``"latitud"``/``"longitud"``.
+    date_col:
+        Station sampling-date column name. Defaults to ``"date"``.
+    time_tolerance_days:
+        Maximum allowed difference, in days, between a station's date and
+        the nearest datacube time step. ``0`` (the default) requires an
+        exact calendar-date match. Ties (equal distance to two time steps)
+        break toward the earlier occurrence.
+    datacube_crs:
+        CRS of the datacube's ``x``/``y`` coordinates. Defaults to
+        ``"EPSG:4326"``, matching :func:`~aquamatch.acolite_spec.append_l2w_to_datacube`'s
+        own default. Pass the actual ``target_crs`` used when building the
+        cube if it differs — this is not auto-detected from the store's
+        grid-mapping metadata, which can be misleading (e.g. named
+        ``transverse_mercator`` even after reprojection to EPSG:4326).
+
+    Returns
+    -------
+    pandas.DataFrame
+        Copy of ``stations`` with, per extracted variable ``var``:
+
+        * ``{var}_mean`` (float) — NaN-aware mean of the pixel window.
+        * ``{var}_n_valid_px`` (int) — non-NaN pixels contributing to the
+          mean (out of up to ``window_size**2``).
+
+        Plus ``in_bounds`` (bool, True only when both spatially inside the
+        cube's grid and a time step was matched within tolerance) and
+        ``matched_time_delta_days`` (float, NaN when unmatched) — the
+        latter is a diagnostic for spotting silent date-matching mismatches.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``datacube_path`` does not exist.
+    ValueError
+        If ``window_size`` isn't a positive odd integer; if
+        ``time_tolerance_days`` is negative; if ``lat_col``/``lon_col``/
+        ``date_col`` aren't columns of ``stations``; if the variable set
+        (after filtering) is empty; or the datacube has no time steps.
+    ImportError
+        If xarray or rasterio aren't installed.
+
+    Examples
+    --------
+    >>> from aquamatch.utils import extract_datacube_pixel_values
+    >>> stations = pd.read_csv("data/monitoring_data/campaigns_unique_data.csv")
+    >>> result = extract_datacube_pixel_values(
+    ...     datacube_path="data/data_cube/l2w_datacube.zarr",
+    ...     stations=stations,
+    ...     variables=["chl_oc3"],
+    ... )
+    >>> result[["date", "latitud", "longitud",
+    ...         "chl_oc3_mean", "chl_oc3_n_valid_px", "in_bounds"]]
+    """
+    try:
+        import numpy as np
+        import xarray as xr
+        import rasterio.warp
+    except ImportError as exc:
+        raise ImportError(
+            "extract_datacube_pixel_values requires xarray and rasterio.\n"
+            f"Original error: {exc}"
+        ) from exc
+
+    datacube_path = Path(datacube_path)
+    if not datacube_path.exists():
+        raise FileNotFoundError(f"Datacube not found: {datacube_path}")
+
+    if window_size < 1 or window_size % 2 == 0:
+        raise ValueError(
+            f"window_size must be a positive odd integer, got {window_size}."
+        )
+    if time_tolerance_days < 0:
+        raise ValueError(
+            f"time_tolerance_days must be >= 0, got {time_tolerance_days}."
+        )
+    for col in (lat_col, lon_col, date_col):
+        if col not in stations.columns:
+            raise ValueError(f"Column '{col}' not found in stations columns.")
+
+    ds = xr.open_zarr(datacube_path, consolidated=False)
+    try:
+        data_vars = [
+            v for v in ds.data_vars if {"time", "y", "x"} <= set(ds[v].dims)
+        ]
+        if variables is not None:
+            data_vars = [v for v in variables if v in data_vars]
+        if not data_vars:
+            raise ValueError(f"No exportable variables found in {datacube_path.name}.")
+
+        out = stations.copy()
+
+        if out.empty:
+            for var in data_vars:
+                out[f"{var}_mean"] = pd.Series(dtype="float64")
+                out[f"{var}_n_valid_px"] = pd.Series(dtype="int64")
+            out["in_bounds"] = pd.Series(dtype="bool")
+            out["matched_time_delta_days"] = pd.Series(dtype="float64")
+            logger.info(
+                "stations is empty — returning correctly-columned empty result."
+            )
+            return out
+
+        n_rows = ds.sizes["y"]
+        n_cols = ds.sizes["x"]
+        x_coords = ds["x"].values
+        y_coords = ds["y"].values
+        minx, maxx = float(x_coords.min()), float(x_coords.max())
+        miny, maxy = float(y_coords.min()), float(y_coords.max())
+
+        cube_times = pd.DatetimeIndex(ds["time"].values).normalize()
+        if len(cube_times) == 0:
+            raise ValueError(f"Datacube at {datacube_path} has no time steps.")
+
+        logger.info(
+            f"Extracting {len(data_vars)} variable(s) for {len(out)} station(s) "
+            f"from {datacube_path.name} (CRS={datacube_crs}, grid={n_rows}x{n_cols}, "
+            f"{len(cube_times)} time step(s), window_size={window_size}, "
+            f"time_tolerance_days={time_tolerance_days})."
+        )
+
+        # --- Spatial matching ---
+        lons = out[lon_col].to_numpy(dtype="float64")
+        lats = out[lat_col].to_numpy(dtype="float64")
+        xs_native, ys_native = rasterio.warp.transform(
+            "EPSG:4326", datacube_crs, lons.tolist(), lats.tolist()
+        )
+        xs_native = np.asarray(xs_native)
+        ys_native = np.asarray(ys_native)
+
+        spatial_in_bounds = (
+            (xs_native >= minx)
+            & (xs_native <= maxx)
+            & (ys_native >= miny)
+            & (ys_native <= maxy)
+        )
+
+        col_pos = pd.Index(x_coords).get_indexer(xs_native, method="nearest")
+        row_pos = pd.Index(y_coords).get_indexer(ys_native, method="nearest")
+
+        # --- Temporal matching: each row gets its own matched time index ---
+        station_dates = pd.to_datetime(out[date_col], errors="coerce").dt.normalize()
+        time_idx = np.full(len(out), -1, dtype="int64")
+        time_delta_days = np.full(len(out), np.nan, dtype="float64")
+        for i, sdate in enumerate(station_dates):
+            if pd.isna(sdate):
+                continue
+            deltas = np.abs((cube_times - sdate).days.to_numpy())
+            best = int(np.argmin(deltas))
+            if deltas[best] <= time_tolerance_days:
+                time_idx[i] = best
+                time_delta_days[i] = float(deltas[best])
+
+        in_bounds = spatial_in_bounds & (time_idx >= 0)
+        n_no_time_match = int(((time_idx < 0)).sum())
+        if n_no_time_match:
+            logger.info(
+                f"{n_no_time_match}/{len(out)} station(s) have no datacube date "
+                f"within {time_tolerance_days} day(s) — will get NaN mean(s) and "
+                "in_bounds=False."
+            )
+
+        half = window_size // 2
+
+        for var in data_vars:
+            means = np.full(len(out), np.nan, dtype="float64")
+            n_valid = np.zeros(len(out), dtype="int64")
+
+            matched_times = sorted(set(time_idx[in_bounds].tolist()))
+            for t in matched_times:
+                mask = in_bounds & (time_idx == t)
+                values = ds[var].isel(time=t).transpose("y", "x").values
+                sub_means, sub_valid = _windowed_nanmean(
+                    values, row_pos[mask], col_pos[mask], half, n_rows, n_cols
+                )
+                means[mask] = sub_means
+                n_valid[mask] = sub_valid
+
+            out[f"{var}_mean"] = means
+            out[f"{var}_n_valid_px"] = n_valid
+
+        out["in_bounds"] = in_bounds
+        out["matched_time_delta_days"] = time_delta_days
+
+        return out
+    finally:
+        ds.close()
+
+
+def plot_satellite_vs_insitu(
+    campaigns_csv: Path | str,
+    datacube_path: Path | str,
+    output_figure: Path | str,
+    satellite_var: str = "chl_oc3",
+    insitu_parametro: str = "Clorofila_a_(lab)",
+    window_size: int = 3,
+    time_tolerance_days: int = 0,
+    return_dataframe: bool = True,
+    figure_dpi: int = 150,
+    lat_col: str = "latitud",
+    lon_col: str = "longitud",
+    date_col: str = "date",
+    value_col: str = "organized_value",
+    parametro_col: str = "parametro",
+    datacube_crs: str = "EPSG:4326",
+) -> Optional[tuple[pd.DataFrame, dict]]:
+    """
+    Join satellite-extracted pixel values against in-situ measurements and
+    produce a validation scatter plot with correlation statistics.
+
+    Filters ``campaigns_csv`` (a long/tidy table with one row per measured
+    parameter per sample, e.g. ``data/monitoring_data/campaigns_organized.csv``)
+    to ``insitu_parametro``, extracts the matching satellite pixel value for
+    each remaining row via :func:`extract_datacube_pixel_values`, and plots
+    in-situ (x-axis, reference) against satellite (y-axis, retrieved) values
+    with a 1:1 reference line.
+
+    In-situ chlorophyll-a is conventionally reported in µg/L, which is
+    numerically identical to ``chl_oc3``'s mg/m³ — no unit conversion is
+    applied or needed for that default pairing.
+
+    Parameters
+    ----------
+    campaigns_csv:
+        Path to the long/tidy in-situ measurements CSV.
+    datacube_path:
+        Path to the L2W Zarr datacube (see :func:`extract_datacube_pixel_values`).
+    output_figure:
+        Destination path for the PNG figure. Parent directories are
+        created automatically.
+    satellite_var:
+        Datacube variable to compare against. Defaults to ``"chl_oc3"``.
+    insitu_parametro:
+        Value of ``parametro_col`` to filter ``campaigns_csv`` to. Defaults
+        to ``"Clorofila_a_(lab)"``.
+    window_size, time_tolerance_days, datacube_crs:
+        Passed through to :func:`extract_datacube_pixel_values`.
+    return_dataframe:
+        If ``True`` (default), return ``(matched_df, stats)``. If ``False``,
+        return ``None``.
+    figure_dpi:
+        Resolution of the saved figure in dots per inch. Defaults to ``150``.
+    lat_col, lon_col, date_col:
+        Station latitude/longitude/date column names. Default to
+        ``"latitud"``/``"longitud"``/``"date"``.
+    value_col:
+        In-situ measurement value column. Defaults to ``"organized_value"``.
+    parametro_col:
+        Column identifying which parameter each row measures. Defaults to
+        ``"parametro"``.
+
+    Returns
+    -------
+    tuple[pandas.DataFrame, dict] or None
+        ``(matched_df, stats)`` when ``return_dataframe=True``, else
+        ``None``. ``matched_df`` is the subset of extracted rows with a
+        valid satellite matchup (``in_bounds`` and non-NaN
+        ``{satellite_var}_mean``). ``stats`` has keys ``n``, ``r``, ``r2``,
+        ``rmse``, ``bias`` — all ``NaN`` except ``n`` when there are zero
+        matchups.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``campaigns_csv`` or ``datacube_path`` does not exist.
+    ValueError
+        If required columns are missing from ``campaigns_csv``, or no rows
+        remain after filtering to ``insitu_parametro`` with a non-null
+        ``value_col``.
+    ImportError
+        If matplotlib, xarray, or rasterio aren't installed.
+
+    Examples
+    --------
+    >>> from aquamatch.utils import plot_satellite_vs_insitu
+    >>> matched, stats = plot_satellite_vs_insitu(
+    ...     campaigns_csv="data/monitoring_data/campaigns_organized.csv",
+    ...     datacube_path="data/data_cube/l2w_datacube.zarr",
+    ...     output_figure="reports/satellite_vs_insitu_chl.png",
+    ... )
+    >>> print(stats)
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise ImportError(
+            "plot_satellite_vs_insitu requires matplotlib.\n"
+            f"Original error: {exc}"
+        ) from exc
+
+    import numpy as np
+
+    campaigns_csv = Path(campaigns_csv)
+    datacube_path = Path(datacube_path)
+    output_figure = Path(output_figure)
+
+    if not campaigns_csv.exists():
+        raise FileNotFoundError(f"Campaigns CSV not found: {campaigns_csv}")
+    if not datacube_path.exists():
+        raise FileNotFoundError(f"Datacube not found: {datacube_path}")
+
+    df = pd.read_csv(campaigns_csv)
+    required_cols = {parametro_col, value_col, lat_col, lon_col, date_col}
+    missing_cols = required_cols - set(df.columns)
+    if missing_cols:
+        raise ValueError(
+            f"Column(s) {sorted(missing_cols)} not found in {campaigns_csv}."
+        )
+
+    subset = (
+        df[df[parametro_col] == insitu_parametro]
+        .dropna(subset=[value_col])
+        .reset_index(drop=True)
+    )
+    if subset.empty:
+        raise ValueError(
+            f"No rows found for {parametro_col}='{insitu_parametro}' with "
+            f"non-null {value_col} in {campaigns_csv}."
+        )
+
+    logger.info(
+        f"Matching {len(subset)} in-situ '{insitu_parametro}' measurement(s) "
+        f"against satellite variable '{satellite_var}'."
+    )
+
+    extracted = extract_datacube_pixel_values(
+        datacube_path,
+        subset,
+        variables=[satellite_var],
+        window_size=window_size,
+        lat_col=lat_col,
+        lon_col=lon_col,
+        date_col=date_col,
+        time_tolerance_days=time_tolerance_days,
+        datacube_crs=datacube_crs,
+    )
+
+    sat_col = f"{satellite_var}_mean"
+    matched = extracted[
+        extracted["in_bounds"] & extracted[sat_col].notna()
+    ].reset_index(drop=True)
+
+    n = len(matched)
+    if n == 0:
+        logger.warning(
+            "No satellite/in-situ matchups found — check time_tolerance_days, "
+            "station coordinates, and datacube coverage. Stats will be NaN "
+            "and the figure will show no points."
+        )
+        r = r2 = rmse = bias = float("nan")
+    else:
+        insitu_vals = matched[value_col].to_numpy("float64")
+        sat_vals = matched[sat_col].to_numpy("float64")
+
+        if n >= 2:
+            r = float(np.corrcoef(sat_vals, insitu_vals)[0, 1])
+            r2 = r**2
+        else:
+            logger.warning(f"Only {n} matchup(s) — correlation undefined (need N>=2).")
+            r = r2 = float("nan")
+
+        rmse = float(np.sqrt(np.mean((sat_vals - insitu_vals) ** 2)))
+        bias = float(np.mean(sat_vals - insitu_vals))
+
+        if n < 5:
+            logger.warning(
+                f"Small sample size (N={n}) — correlation statistics may be "
+                "unreliable."
+            )
+
+    stats = {"n": n, "r": r, "r2": r2, "rmse": rmse, "bias": bias}
+
+    # --- Build figure ---
+    fig, ax = plt.subplots(figsize=(6.5, 6.5))
+    fig.suptitle(
+        f"Satellite vs. In-Situ — {satellite_var} vs. {insitu_parametro}",
+        fontsize=13,
+        fontweight="bold",
+        y=1.01,
+    )
+
+    if n > 0:
+        insitu_vals = matched[value_col].to_numpy("float64")
+        sat_vals = matched[sat_col].to_numpy("float64")
+
+        ax.scatter(
+            insitu_vals, sat_vals, color="#2196F3", alpha=0.75, edgecolors="none"
+        )
+
+        lo = float(min(insitu_vals.min(), sat_vals.min()))
+        hi = float(max(insitu_vals.max(), sat_vals.max()))
+        pad = (hi - lo) * 0.05 if hi > lo else 1.0
+        lo, hi = lo - pad, hi + pad
+        ax.plot([lo, hi], [lo, hi], color="#F44336", linestyle="--", linewidth=2, label="1:1")
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+
+        stats_text = (
+            f"N = {n}\n"
+            f"r = {r:.3f}\n"
+            f"R² = {r2:.3f}\n"
+            f"RMSE = {rmse:.3f}\n"
+            f"bias = {bias:.3f}"
+        )
+        ax.text(
+            0.05,
+            0.95,
+            stats_text,
+            transform=ax.transAxes,
+            fontsize=10,
+            verticalalignment="top",
+            bbox={
+                "boxstyle": "round",
+                "facecolor": "white",
+                "edgecolor": "#4CAF50",
+                "alpha": 0.9,
+            },
+        )
+        ax.legend(fontsize=9, loc="lower right")
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No matchups found",
+            transform=ax.transAxes,
+            fontsize=12,
+            ha="center",
+            va="center",
+        )
+
+    ax.set_xlabel(f"In-situ {insitu_parametro}", fontsize=10)
+    ax.set_ylabel(f"Satellite {satellite_var}", fontsize=10)
+    ax.grid(True, linestyle="--", alpha=0.5)
+
+    fig.tight_layout()
+
+    output_figure.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_figure, dpi=figure_dpi, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info(
+        f"Satellite-vs-in-situ figure saved: {output_figure} (N={n}, r={r})"
+    )
+
+    if return_dataframe:
+        return matched, stats
+    return None
