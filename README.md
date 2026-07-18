@@ -550,7 +550,69 @@ For each requested variable `var`, the returned DataFrame gains:
 | `{var}_n_valid_px` | int | Non-NaN pixels contributing to the mean (out of up to `window_size**2`) — useful for judging extraction quality |
 | `in_bounds` | bool | Whether the station falls within the scene's footprint at all (shared across all variables) |
 
-By default `variables=None` extracts every real data variable in the file, `window_size` must be a positive odd integer, and `lat_col`/`lon_col` default to `"latitud"`/`"longitud"` to match this project's campaign CSVs — pass your own column names if your station table differs. This works on one L2W scene at a time; matching each station to its temporally-closest scene is a planned follow-up, not yet implemented.
+By default `variables=None` extracts every real data variable in the file, `window_size` must be a positive odd integer, and `lat_col`/`lon_col` default to `"latitud"`/`"longitud"` to match this project's campaign CSVs — pass your own column names if your station table differs. This works on one L2W scene at a time — for a table of stations spanning many campaign dates, use `extract_datacube_pixel_values` below instead, which matches each row to its own date automatically.
+
+### L2W pixel-value extraction from a datacube (multi-date)
+
+`extract_l2w_pixel_values` above is scoped to one L2W scene, so calling it once with a single file against a station table spanning many dates gives every row the same scene's value — not what you want for a real matchup analysis. `extract_datacube_pixel_values` is the multi-date counterpart: it reads a Zarr datacube built by `append_l2w_to_datacube` (Step 4's datacube option) and, for every row of `stations`, selects the pixel window at *that row's own* matched date — never a shared or fixed date.
+
+```python
+from aquamatch.utils import extract_datacube_pixel_values
+import pandas as pd
+
+stations = pd.read_csv("data/monitoring_data/campaigns_unique_data.csv")
+
+result = extract_datacube_pixel_values(
+    datacube_path="data/data_cube/l2w_datacube.zarr",
+    stations=stations,
+    variables=["chl_oc3"],
+    time_tolerance_days=5,
+)
+
+print(result[["date", "chl_oc3_mean", "chl_oc3_n_valid_px", "in_bounds", "matched_time_delta_days"]])
+```
+
+Rows sharing the same matched date reuse a single load of that date's 2-D slice, so this is also more efficient than reopening one L2W file per station.
+
+| Column | Type | Description |
+|--------|------|--------------|
+| `{var}_mean` | float | NaN-aware mean of the pixel window at the row's matched date, or `NaN` if unmatched/out of bounds/fully masked |
+| `{var}_n_valid_px` | int | Non-NaN pixels contributing to the mean |
+| `in_bounds` | bool | `True` only when both spatially inside the cube's grid *and* a datacube date was found within `time_tolerance_days` |
+| `matched_time_delta_days` | float | Days between the row's date and the matched datacube date (`NaN` when unmatched) — a diagnostic for spotting silent date-matching mismatches |
+
+`time_tolerance_days` (default `0`) controls how close a datacube date must be to a station's date to count as a match — widen it if your campaign dates don't line up exactly with the scenes you processed into the cube. `datacube_crs` defaults to `"EPSG:4326"` (matching `append_l2w_to_datacube`'s own default); pass the actual `target_crs` you built the cube with if it differs.
+
+### Satellite-vs-in-situ scatter plot & correlation analysis
+
+Once you have satellite pixel values, `plot_satellite_vs_insitu` joins them against your in-situ measurements and produces a validation scatter plot with correlation statistics — this is the workflow the two functions above feed into. It filters a long/tidy campaigns CSV (e.g. `data/monitoring_data/campaigns_organized.csv`, one row per measured parameter per sample) to a single parameter, calls `extract_datacube_pixel_values` internally, and plots in-situ (x-axis, reference) against satellite (y-axis, retrieved) values with a 1:1 line.
+
+```python
+from aquamatch.utils import plot_satellite_vs_insitu
+
+matched, stats = plot_satellite_vs_insitu(
+    campaigns_csv="data/monitoring_data/campaigns_organized.csv",
+    datacube_path="data/data_cube/l2w_datacube.zarr",
+    output_figure="reports/satellite_vs_insitu_chl.png",
+    time_tolerance_days=5,
+)
+
+print(stats)  # {"n": ..., "r": ..., "r2": ..., "rmse": ..., "bias": ...}
+```
+
+The default column names (`parametro_col="parametro"`, `value_col="organized_value"`, `insitu_parametro="Clorofila_a_(lab)"`) match this project's own cleaned campaigns CSV — if your in-situ table uses different column names (e.g. a `valor_transformado` column instead of `organized_value`), pass them explicitly:
+
+```python
+matched, stats = plot_satellite_vs_insitu(
+    campaigns_csv="data/monitoring_data/campaigns_organized.csv",
+    datacube_path="data/data_cube/l2w_datacube.zarr",
+    output_figure="reports/satellite_vs_insitu_chl.png",
+    value_col="valor_transformado",
+    time_tolerance_days=5,
+)
+```
+
+`stats` has keys `n`, `r` (Pearson correlation), `r2`, `rmse`, and `bias` (`satellite - insitu`), computed with plain numpy — no scipy/scikit-learn dependency. Zero matchups (e.g. `time_tolerance_days` too strict, or wrong tile) is not an error: `stats["n"] == 0`, all other stats are `NaN`, and the figure is still written with a "No matchups found" annotation instead of crashing — check the logged warning to see why. In-situ chlorophyll-a is conventionally reported in µg/L, numerically identical to `chl_oc3`'s mg/m³, so no unit conversion is applied for that default pairing.
 
 ### Download completeness audit
 
