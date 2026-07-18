@@ -20,9 +20,12 @@ import pytest
 
 from aquamatch.utils import (
     _flatten_images,
+    _iter_bucketed_images,
+    _get_download_status,
     _best_image_within_tolerance,
     _compute_metrics_for_tolerance,
     analyze_temporal_opportunity,
+    audit_downloads,
 )
 
 # ---------------------------------------------------------------------------
@@ -413,3 +416,316 @@ class TestAnalyzeTemporalOpportunity:
         df = analyze_temporal_opportunity(catalog, out, max_delta_days=2)
         assert df.iloc[0]["n_dates"] == 1
         assert df.iloc[0]["n_available"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _iter_bucketed_images
+# ---------------------------------------------------------------------------
+
+
+class TestIterBucketedImages:
+    def test_yields_bucket_tagged_pairs_in_order(self):
+        images_found = {
+            "same_day": [_img(0, 5, "SD1")],
+            "previous": [_img(1, 3, "PV1")],
+            "posterior": [_img(2, 8, "PT1")],
+        }
+        result = list(_iter_bucketed_images(images_found))
+        assert result == [
+            ("same_day", images_found["same_day"][0]),
+            ("previous", images_found["previous"][0]),
+            ("posterior", images_found["posterior"][0]),
+        ]
+
+    def test_missing_bucket_keys_default_to_empty(self):
+        result = list(_iter_bucketed_images({"same_day": [_img(0, 5, "SD1")]}))
+        assert result == [("same_day", {"id": "SD1", "delta_days": 0, "cloud_cover": 5})]
+
+    def test_legacy_flat_list_yields_none_bucket(self):
+        images = [_img(0, 5, "L1"), _img(1, 3, "L2")]
+        result = list(_iter_bucketed_images(images))
+        assert result == [(None, images[0]), (None, images[1])]
+
+    def test_empty_dict_yields_nothing(self):
+        assert list(_iter_bucketed_images({})) == []
+
+    def test_empty_list_yields_nothing(self):
+        assert list(_iter_bucketed_images([])) == []
+
+
+# ---------------------------------------------------------------------------
+# _get_download_status
+# ---------------------------------------------------------------------------
+
+
+class TestGetDownloadStatus:
+    def test_safe_exists_true_for_populated_folder(self, tmp_path):
+        safe_folder = tmp_path / "SCENE1"
+        safe_folder.mkdir()
+        (safe_folder / "dummy.xml").write_text("x")
+        status = _get_download_status("SCENE1", tmp_path, download_scl=False)
+        assert status["safe_exists"] is True
+
+    def test_safe_exists_true_for_dot_safe_file(self, tmp_path):
+        (tmp_path / "SCENE1.SAFE").write_text("x")
+        status = _get_download_status("SCENE1", tmp_path, download_scl=False)
+        assert status["safe_exists"] is True
+
+    def test_safe_exists_false_when_folder_empty(self, tmp_path):
+        (tmp_path / "SCENE1").mkdir()
+        status = _get_download_status("SCENE1", tmp_path, download_scl=False)
+        assert status["safe_exists"] is False
+
+    def test_safe_exists_false_when_absent(self, tmp_path):
+        status = _get_download_status("SCENE1", tmp_path, download_scl=False)
+        assert status["safe_exists"] is False
+
+    def test_scl_exists_none_when_download_scl_false(self, tmp_path):
+        status = _get_download_status("SCENE1", tmp_path, download_scl=False)
+        assert status["scl_exists"] is None
+
+    def test_scl_exists_true_when_file_present(self, tmp_path):
+        scl_dir = tmp_path / "scl"
+        scl_dir.mkdir()
+        (scl_dir / "SCENE1_SCL.tif").write_bytes(b"x")
+        status = _get_download_status("SCENE1", tmp_path, download_scl=True)
+        assert status["scl_exists"] is True
+
+    def test_scl_exists_false_when_file_absent(self, tmp_path):
+        status = _get_download_status("SCENE1", tmp_path, download_scl=True)
+        assert status["scl_exists"] is False
+
+    def test_all_downloaded_requires_both_when_download_scl_true(self, tmp_path):
+        safe_folder = tmp_path / "SCENE1"
+        safe_folder.mkdir()
+        (safe_folder / "dummy.xml").write_text("x")
+        status = _get_download_status("SCENE1", tmp_path, download_scl=True)
+        assert status["all_downloaded"] is False
+
+        scl_dir = tmp_path / "scl"
+        scl_dir.mkdir()
+        (scl_dir / "SCENE1_SCL.tif").write_bytes(b"x")
+        status = _get_download_status("SCENE1", tmp_path, download_scl=True)
+        assert status["all_downloaded"] is True
+
+    def test_all_downloaded_ignores_scl_when_download_scl_false(self, tmp_path):
+        safe_folder = tmp_path / "SCENE1"
+        safe_folder.mkdir()
+        (safe_folder / "dummy.xml").write_text("x")
+        status = _get_download_status("SCENE1", tmp_path, download_scl=False)
+        assert status["all_downloaded"] is True
+
+
+# ---------------------------------------------------------------------------
+# audit_downloads
+# ---------------------------------------------------------------------------
+
+
+class TestAuditDownloads:
+    def _touch_safe(self, output_dir: Path, scene_id: str) -> None:
+        safe_folder = output_dir / scene_id
+        safe_folder.mkdir(parents=True, exist_ok=True)
+        (safe_folder / "dummy.xml").write_text("x")
+
+    def _touch_scl(self, output_dir: Path, scene_id: str) -> None:
+        scl_dir = output_dir / "scl"
+        scl_dir.mkdir(parents=True, exist_ok=True)
+        core_id = scene_id.split(".")[0]
+        (scl_dir / f"{core_id}_SCL.tif").write_bytes(b"x")
+
+    def test_returns_dataframe_with_expected_columns(self, tmp_path):
+        entries = [_entry("2025-08-01", same_day=[_img(0, 5, "SD1")])]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        df = audit_downloads(catalog, out_dir)
+        expected = {
+            "field_date",
+            "scene_id",
+            "delta_days",
+            "cloud_cover",
+            "safe_exists",
+            "scl_exists",
+            "all_downloaded",
+            "bucket",
+        }
+        assert set(df.columns) == expected
+
+    def test_row_count_matches_total_images_across_buckets(self, tmp_path):
+        entries = [
+            _entry(
+                "2025-08-01",
+                same_day=[_img(0, 5, "SD1")],
+                previous=[_img(1, 3, "PV1")],
+                posterior=[_img(2, 8, "PT1")],
+            )
+        ]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        df = audit_downloads(catalog, out_dir)
+        assert len(df) == 3
+
+    def test_row_count_across_multiple_field_dates(self, tmp_path):
+        entries = [
+            _entry("2025-08-01", same_day=[_img(0, 5, "SD1")]),
+            _entry(
+                "2025-08-02", same_day=[_img(0, 3, "SD2")], previous=[_img(1, 4, "PV2")]
+            ),
+        ]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        df = audit_downloads(catalog, out_dir)
+        assert len(df) == 3
+
+    def test_scalar_columns_match_source_image(self, tmp_path):
+        entries = [_entry("2025-08-01", same_day=[_img(3, 12.5, "SD1")])]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        df = audit_downloads(catalog, out_dir)
+        row = df.iloc[0]
+        assert row["field_date"] == "2025-08-01"
+        assert row["scene_id"] == "SD1"
+        assert row["delta_days"] == 3
+        assert row["cloud_cover"] == pytest.approx(12.5)
+
+    def test_bucket_column_tags_correctly(self, tmp_path):
+        entries = [
+            _entry(
+                "2025-08-01",
+                same_day=[_img(0, 5, "SD1")],
+                previous=[_img(1, 3, "PV1")],
+                posterior=[_img(2, 8, "PT1")],
+            )
+        ]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        df = audit_downloads(catalog, out_dir)
+        by_id = df.set_index("scene_id")["bucket"]
+        assert by_id["SD1"] == "same_day"
+        assert by_id["PV1"] == "previous"
+        assert by_id["PT1"] == "posterior"
+
+    def test_safe_exists_true_when_folder_present(self, tmp_path):
+        entries = [_entry("2025-08-01", same_day=[_img(0, 5, "S2A_TEST")])]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        self._touch_safe(out_dir, "S2A_TEST")
+        df = audit_downloads(catalog, out_dir, download_scl=False)
+        assert bool(df.iloc[0]["safe_exists"]) is True
+
+    def test_safe_exists_false_when_absent(self, tmp_path):
+        entries = [_entry("2025-08-01", same_day=[_img(0, 5, "S2A_TEST")])]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        df = audit_downloads(catalog, out_dir, download_scl=False)
+        assert bool(df.iloc[0]["safe_exists"]) is False
+
+    def test_all_downloaded_true_when_safe_and_scl_present(self, tmp_path):
+        entries = [_entry("2025-08-01", same_day=[_img(0, 5, "S2A_TEST")])]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        self._touch_safe(out_dir, "S2A_TEST")
+        self._touch_scl(out_dir, "S2A_TEST")
+        df = audit_downloads(catalog, out_dir, download_scl=True)
+        row = df.iloc[0]
+        assert bool(row["safe_exists"]) is True
+        assert bool(row["scl_exists"]) is True
+        assert bool(row["all_downloaded"]) is True
+
+    def test_all_downloaded_false_when_scl_missing(self, tmp_path):
+        entries = [_entry("2025-08-01", same_day=[_img(0, 5, "S2A_TEST")])]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        self._touch_safe(out_dir, "S2A_TEST")
+        df = audit_downloads(catalog, out_dir, download_scl=True)
+        row = df.iloc[0]
+        assert bool(row["safe_exists"]) is True
+        assert bool(row["scl_exists"]) is False
+        assert bool(row["all_downloaded"]) is False
+
+    def test_scl_exists_none_when_download_scl_false(self, tmp_path):
+        entries = [_entry("2025-08-01", same_day=[_img(0, 5, "S2A_TEST")])]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        self._touch_safe(out_dir, "S2A_TEST")
+        df = audit_downloads(catalog, out_dir, download_scl=False)
+        assert df.iloc[0]["scl_exists"] is None
+        assert bool(df.iloc[0]["all_downloaded"]) is True
+
+    def test_mixed_downloaded_and_missing_scenes(self, tmp_path):
+        entries = [
+            _entry(
+                "2025-08-01",
+                same_day=[_img(0, 5, "DOWNLOADED")],
+                previous=[_img(1, 3, "MISSING")],
+            )
+        ]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        self._touch_safe(out_dir, "DOWNLOADED")
+        df = audit_downloads(catalog, out_dir, download_scl=False)
+        by_id = df.set_index("scene_id")["all_downloaded"]
+        assert bool(by_id["DOWNLOADED"]) is True
+        assert bool(by_id["MISSING"]) is False
+
+    def test_raises_value_error_for_empty_catalog(self, tmp_path):
+        catalog = _write_catalog(tmp_path, [])
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        with pytest.raises(ValueError, match="empty"):
+            audit_downloads(catalog, out_dir)
+
+    def test_entries_with_no_images_produce_empty_dataframe_with_columns(self, tmp_path):
+        entries = [_entry("2025-08-01")]  # all buckets empty
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        df = audit_downloads(catalog, out_dir)
+        assert len(df) == 0
+        expected = {
+            "field_date",
+            "scene_id",
+            "delta_days",
+            "cloud_cover",
+            "safe_exists",
+            "scl_exists",
+            "all_downloaded",
+            "bucket",
+        }
+        assert set(df.columns) == expected
+
+    def test_legacy_flat_list_catalog_handled(self, tmp_path):
+        entries = [
+            {
+                "field_date": "2025-08-01",
+                "images_found": [_img(0, 5, "LEGACY1"), _img(1, 3, "LEGACY2")],
+            }
+        ]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        df = audit_downloads(catalog, out_dir, download_scl=False)
+        assert len(df) == 2
+        assert df["bucket"].isna().all()
+
+    def test_raises_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            audit_downloads(tmp_path / "nonexistent.json", tmp_path)
+
+    def test_accepts_string_paths(self, tmp_path):
+        entries = [_entry("2025-08-01", same_day=[_img(0, 5, "SD1")])]
+        catalog = _write_catalog(tmp_path, entries)
+        out_dir = tmp_path / "downloads"
+        out_dir.mkdir()
+        df = audit_downloads(str(catalog), str(out_dir))
+        assert isinstance(df, pd.DataFrame)

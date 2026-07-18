@@ -3,8 +3,8 @@ utils.py
 ========
 Utility functions for the aquamatch workflow.
 
-Currently provides temporal tolerance analysis for Sentinel-2 catalog
-opportunity cost quantification.
+Provides temporal tolerance analysis and campaign-level download auditing
+for Sentinel-2 catalog data.
 """
 
 from __future__ import annotations
@@ -47,6 +47,86 @@ def _flatten_images(images_found: dict | list) -> list[dict]:
         + images_found.get("previous", [])
         + images_found.get("posterior", [])
     )
+
+
+def _iter_bucketed_images(images_found: dict | list):
+    """
+    Yield ``(bucket, image)`` pairs from a catalog entry's ``images_found``.
+
+    Mirrors ``_flatten_images``'s bucket handling, but preserves which
+    bucket each image came from (``audit_downloads`` needs to report it;
+    ``_flatten_images`` intentionally discards it for its own callers).
+    Legacy flat-list catalogs have no bucket information, so ``bucket``
+    is ``None`` for every image in that case.
+
+    Parameters
+    ----------
+    images_found:
+        Either the bucketed dict ``{"same_day": [...], "previous": [...],
+        "posterior": [...]}`` or a legacy flat list.
+
+    Yields
+    ------
+    tuple[str | None, dict]
+        ``(bucket_name_or_none, image_dict)``.
+    """
+    if isinstance(images_found, list):
+        for img in images_found:
+            yield None, img
+        return
+    for bucket in ("same_day", "previous", "posterior"):
+        for img in images_found.get(bucket, []):
+            yield bucket, img
+
+
+# Mirrors aquamatch.sentinel_data.get_download_status()/get_scl_path().
+# Duplicated (not imported) because sentinel_data.py performs a real
+# network call and requires credentials at *module import time*
+# (build_clients() at module scope) — importing it here would make a
+# pure local filesystem check require network access. Keep in sync with
+# the source of truth in sentinel_data.py if that logic changes.
+_SCL_SUBDIR = "scl"
+
+
+def _get_download_status(product_id: str, output_dir: Path, download_scl: bool) -> dict:
+    """
+    Local filesystem download status for a single scene.
+
+    Parameters
+    ----------
+    product_id:
+        Scene identifier (with or without ``.SAFE`` extension).
+    output_dir:
+        Root download directory.
+    download_scl:
+        Whether an SCL file is expected alongside the SAFE product.
+
+    Returns
+    -------
+    dict
+        ``{"safe_exists": bool, "scl_exists": bool | None,
+        "all_downloaded": bool}``. ``scl_exists`` is ``None`` when
+        ``download_scl`` is ``False``.
+    """
+    safe_folder = Path(output_dir) / product_id
+    safe_file = Path(output_dir) / f"{product_id}.SAFE"
+    safe_exists = (
+        safe_folder.exists() and safe_folder.is_dir() and any(safe_folder.iterdir())
+    ) or safe_file.exists()
+
+    scl_exists = None
+    if download_scl:
+        product_core_id = product_id.split(".")[0]
+        scl_path = Path(output_dir) / _SCL_SUBDIR / f"{product_core_id}_SCL.tif"
+        scl_exists = scl_path.exists()
+
+    all_downloaded = (safe_exists and scl_exists) if download_scl else safe_exists
+
+    return {
+        "safe_exists": safe_exists,
+        "scl_exists": scl_exists,
+        "all_downloaded": all_downloaded,
+    }
 
 
 def _best_image_within_tolerance(images: list[dict], max_delta: int) -> Optional[dict]:
@@ -330,3 +410,121 @@ def analyze_temporal_opportunity(
     logger.info(f"Temporal opportunity cost figure saved: {output_figure}")
 
     return df if return_dataframe else None
+
+
+def audit_downloads(
+    catalog_json: Path | str,
+    output_dir: Path | str,
+    download_scl: bool = True,
+) -> pd.DataFrame:
+    """
+    Audit which cataloged Sentinel-2 scenes are actually present on disk.
+
+    Loads the catalog produced by
+    :func:`~aquamatch.sentinel_data.build_catalog`, walks every image
+    across the ``same_day``, ``previous``, and ``posterior`` buckets for
+    each field date, and checks local download status for each scene.
+
+    Parameters
+    ----------
+    catalog_json:
+        Path to the catalog JSON produced by
+        :func:`~aquamatch.sentinel_data.build_catalog`.
+    output_dir:
+        Root download directory — the same root used when downloading
+        SAFE products (and, if applicable, SCL files under ``scl/``).
+    download_scl:
+        Whether SCL files are expected alongside SAFE products. Defaults
+        to ``True``. When ``False``, ``scl_exists`` is ``None`` for
+        every row.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per cataloged scene, with columns:
+
+        * ``field_date`` (str) — field sampling date.
+        * ``scene_id`` (str) — Sentinel-2 scene identifier.
+        * ``delta_days`` (int) — days from the field date.
+        * ``cloud_cover`` (float) — scene cloud cover percentage.
+        * ``safe_exists`` (bool) — SAFE folder present on disk.
+        * ``scl_exists`` (bool or None) — SCL file present
+          (``None`` when ``download_scl=False``).
+        * ``all_downloaded`` (bool) — both SAFE and SCL (if required)
+          present.
+        * ``bucket`` (str or None) — ``"same_day"``, ``"previous"``,
+          ``"posterior"``, or ``None`` for legacy flat-list catalogs
+          with no bucket information.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``catalog_json`` does not exist.
+    ValueError
+        If the catalog is empty.
+
+    Examples
+    --------
+    >>> from aquamatch.utils import audit_downloads
+    >>> df = audit_downloads(
+    ...     catalog_json="data/sentinel_downloads/sentinel_catalog.json",
+    ...     output_dir="data/sentinel_downloads",
+    ... )
+    >>> df[~df["all_downloaded"]][["field_date", "scene_id", "bucket"]]
+    """
+    catalog_json = Path(catalog_json)
+    output_dir = Path(output_dir)
+
+    if not catalog_json.exists():
+        raise FileNotFoundError(f"Catalog JSON not found: {catalog_json}")
+
+    with catalog_json.open() as f:
+        catalog_data: list[dict] = json.load(f)
+
+    if not catalog_data:
+        raise ValueError(f"Catalog is empty: {catalog_json}")
+
+    logger.info(
+        f"Auditing downloads for {len(catalog_data)} field dates "
+        f"against output_dir={output_dir} (download_scl={download_scl})."
+    )
+
+    rows: list[dict] = []
+    for entry in catalog_data:
+        field_date = entry.get("field_date")
+        images_found = entry.get("images_found", [])
+
+        for bucket, img in _iter_bucketed_images(images_found):
+            scene_id = img.get("id")
+            status = _get_download_status(scene_id, output_dir, download_scl)
+            rows.append(
+                {
+                    "field_date": field_date,
+                    "scene_id": scene_id,
+                    "delta_days": img.get("delta_days"),
+                    "cloud_cover": img.get("cloud_cover"),
+                    "safe_exists": status["safe_exists"],
+                    "scl_exists": status["scl_exists"],
+                    "all_downloaded": status["all_downloaded"],
+                    "bucket": bucket,
+                }
+            )
+
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "field_date",
+            "scene_id",
+            "delta_days",
+            "cloud_cover",
+            "safe_exists",
+            "scl_exists",
+            "all_downloaded",
+            "bucket",
+        ],
+    )
+
+    n_downloaded = int(df["all_downloaded"].sum()) if len(df) else 0
+    logger.info(f"Audit complete: {n_downloaded}/{len(df)} scenes fully downloaded.")
+
+    return df
