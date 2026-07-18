@@ -13,6 +13,7 @@ Conventions (matching the existing test suite):
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -23,16 +24,20 @@ import rioxarray  # noqa: F401 - registers the .rio accessor
 import xarray as xr
 from rasterio.crs import CRS
 
+from aquamatch.acolite_spec import append_l2w_to_datacube
 from aquamatch.utils import (
     _flatten_images,
     _iter_bucketed_images,
     _get_download_status,
     _rio_prepare,
+    _windowed_nanmean,
     _best_image_within_tolerance,
     _compute_metrics_for_tolerance,
     analyze_temporal_opportunity,
     audit_downloads,
     extract_l2w_pixel_values,
+    extract_datacube_pixel_values,
+    plot_satellite_vs_insitu,
 )
 
 # ---------------------------------------------------------------------------
@@ -467,7 +472,7 @@ class TestIterBucketedImages:
 
 class TestGetDownloadStatus:
     def test_safe_exists_true_for_populated_folder(self, tmp_path):
-        safe_folder = tmp_path / "SCENE1"
+        safe_folder = tmp_path / "SCENE1.SAFE"
         safe_folder.mkdir()
         (safe_folder / "dummy.xml").write_text("x")
         status = _get_download_status("SCENE1", tmp_path, download_scl=False)
@@ -479,11 +484,53 @@ class TestGetDownloadStatus:
         assert status["safe_exists"] is True
 
     def test_safe_exists_false_when_folder_empty(self, tmp_path):
-        (tmp_path / "SCENE1").mkdir()
+        (tmp_path / "SCENE1.SAFE").mkdir()
         status = _get_download_status("SCENE1", tmp_path, download_scl=False)
         assert status["safe_exists"] is False
 
     def test_safe_exists_false_when_absent(self, tmp_path):
+        status = _get_download_status("SCENE1", tmp_path, download_scl=False)
+        assert status["safe_exists"] is False
+
+    def test_safe_exists_true_for_nested_l1c_path(self, tmp_path):
+        safe_folder = (
+            tmp_path / "Sentinel-2" / "MSI" / "L1C" / "2025" / "08" / "01" / "SCENE1.SAFE"
+        )
+        safe_folder.mkdir(parents=True)
+        (safe_folder / "manifest.safe").write_text("x")
+        status = _get_download_status("SCENE1", tmp_path, download_scl=False)
+        assert status["safe_exists"] is True
+
+    def test_safe_exists_true_for_nested_l1c_n0500_path(self, tmp_path):
+        safe_folder = (
+            tmp_path
+            / "Sentinel-2"
+            / "MSI"
+            / "L1C_N0500"
+            / "2020"
+            / "05"
+            / "13"
+            / "SCENE1.SAFE"
+        )
+        safe_folder.mkdir(parents=True)
+        (safe_folder / "manifest.safe").write_text("x")
+        status = _get_download_status("SCENE1", tmp_path, download_scl=False)
+        assert status["safe_exists"] is True
+
+    def test_safe_exists_true_when_product_id_has_safe_suffix(self, tmp_path):
+        safe_folder = (
+            tmp_path / "Sentinel-2" / "MSI" / "L1C" / "2025" / "08" / "01" / "SCENE1.SAFE"
+        )
+        safe_folder.mkdir(parents=True)
+        (safe_folder / "manifest.safe").write_text("x")
+        status = _get_download_status("SCENE1.SAFE", tmp_path, download_scl=False)
+        assert status["safe_exists"] is True
+
+    def test_safe_exists_false_for_nested_but_empty_safe_folder(self, tmp_path):
+        safe_folder = (
+            tmp_path / "Sentinel-2" / "MSI" / "L1C" / "2025" / "08" / "01" / "SCENE1.SAFE"
+        )
+        safe_folder.mkdir(parents=True)
         status = _get_download_status("SCENE1", tmp_path, download_scl=False)
         assert status["safe_exists"] is False
 
@@ -503,7 +550,7 @@ class TestGetDownloadStatus:
         assert status["scl_exists"] is False
 
     def test_all_downloaded_requires_both_when_download_scl_true(self, tmp_path):
-        safe_folder = tmp_path / "SCENE1"
+        safe_folder = tmp_path / "SCENE1.SAFE"
         safe_folder.mkdir()
         (safe_folder / "dummy.xml").write_text("x")
         status = _get_download_status("SCENE1", tmp_path, download_scl=True)
@@ -516,7 +563,7 @@ class TestGetDownloadStatus:
         assert status["all_downloaded"] is True
 
     def test_all_downloaded_ignores_scl_when_download_scl_false(self, tmp_path):
-        safe_folder = tmp_path / "SCENE1"
+        safe_folder = tmp_path / "SCENE1.SAFE"
         safe_folder.mkdir()
         (safe_folder / "dummy.xml").write_text("x")
         status = _get_download_status("SCENE1", tmp_path, download_scl=False)
@@ -530,7 +577,8 @@ class TestGetDownloadStatus:
 
 class TestAuditDownloads:
     def _touch_safe(self, output_dir: Path, scene_id: str) -> None:
-        safe_folder = output_dir / scene_id
+        core_id = scene_id.split(".")[0]
+        safe_folder = output_dir / f"{core_id}.SAFE"
         safe_folder.mkdir(parents=True, exist_ok=True)
         (safe_folder / "dummy.xml").write_text("x")
 
@@ -1050,3 +1098,788 @@ class TestExtractL2wPixelValues:
 
         with pytest.raises(ValueError, match="lon_col"):
             extract_l2w_pixel_values(nc, stations, variables=["chl_oc3"])
+
+
+# ---------------------------------------------------------------------------
+# extract_datacube_pixel_values fixtures
+# ---------------------------------------------------------------------------
+
+DC_TEST_CRS = CRS.from_epsg(32721)
+DC_Y0 = 6_300_000.0
+DC_X0 = 500_000.0
+DC_RES = 10.0
+
+
+def _dc_coords(ny: int, nx: int):
+    y = np.linspace(DC_Y0, DC_Y0 - (ny - 1) * DC_RES, ny)
+    x = np.linspace(DC_X0, DC_X0 + (nx - 1) * DC_RES, nx)
+    return y, x
+
+
+def _make_datacube(path: Path, times: list, variables: dict) -> Path:
+    """Write a synthetic multi-date Zarr datacube shaped like the output of
+    ``append_l2w_to_datacube`` — dims ``(time, y, x)``. ``variables`` maps
+    variable name -> list of 2D numpy arrays, one per entry in ``times``;
+    all arrays must share the same shape."""
+    names = list(variables)
+    ny, nx = variables[names[0]][0].shape
+    y, x = _dc_coords(ny, nx)
+
+    data_vars = {}
+    for name, arrs in variables.items():
+        assert len(arrs) == len(times)
+        stacked = np.stack([a.astype("float32") for a in arrs])
+        data_vars[name] = (("time", "y", "x"), stacked)
+
+    ds = xr.Dataset(
+        data_vars,
+        coords={"time": pd.to_datetime(times), "y": y, "x": x},
+    )
+    ds.to_zarr(path, mode="w", consolidated=False)
+    return path
+
+
+def _dc_lonlat_for_pixel(row: int, col: int, ny: int, nx: int):
+    y, x = _dc_coords(ny, nx)
+    lons, lats = rasterio.warp.transform(
+        DC_TEST_CRS, "EPSG:4326", [x[col]], [y[row]]
+    )
+    return lons[0], lats[0]
+
+
+# ---------------------------------------------------------------------------
+# extract_datacube_pixel_values
+# ---------------------------------------------------------------------------
+
+
+class TestExtractDatacubePixelValues:
+    def test_two_dates_same_station_pixel_give_different_means(self, tmp_path):
+        # The direct regression test for the bug that motivated this
+        # function: extract_l2w_pixel_values, called with one fixed L2W
+        # file against many in-situ dates, silently reused that one
+        # scene's value for every date. Here two station rows share the
+        # exact same pixel location but different dates, and must each
+        # get their own date's value.
+        arr1 = np.arange(49, dtype="float64").reshape(7, 7)
+        arr2 = arr1 * 3
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01", "2024-02-01"],
+            variables={"chl_oc3": [arr1, arr2]},
+        )
+
+        lon, lat = _dc_lonlat_for_pixel(3, 3, 7, 7)
+        stations = _stations_df(
+            [
+                {"id": "A", "date": "2024-01-01", "latitud": lat, "longitud": lon},
+                {"id": "A", "date": "2024-02-01", "latitud": lat, "longitud": lon},
+            ]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            datacube_crs="EPSG:32721",
+        )
+
+        expected1 = arr1[2:5, 2:5].mean()
+        expected2 = arr2[2:5, 2:5].mean()
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(expected1)
+        assert result.loc[1, "chl_oc3_mean"] == pytest.approx(expected2)
+        assert result.loc[0, "chl_oc3_mean"] != pytest.approx(
+            result.loc[1, "chl_oc3_mean"]
+        )
+        assert result.loc[0, "chl_oc3_n_valid_px"] == 9
+        assert result.loc[1, "chl_oc3_n_valid_px"] == 9
+
+    def test_exact_mean_known_neighborhood(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr", times=["2024-01-01"], variables={"chl_oc3": [arr]}
+        )
+
+        lon, lat = _dc_lonlat_for_pixel(3, 3, 7, 7)
+        stations = _stations_df(
+            [{"id": "A", "date": "2024-01-01", "latitud": lat, "longitud": lon}]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            datacube_crs="EPSG:32721",
+        )
+
+        expected_mean = arr[2:5, 2:5].mean()
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(expected_mean)
+        assert result.loc[0, "chl_oc3_n_valid_px"] == 9
+        assert bool(result.loc[0, "in_bounds"]) is True
+        assert result.loc[0, "matched_time_delta_days"] == pytest.approx(0.0)
+
+    def test_window_clipped_at_raster_edge(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr", times=["2024-01-01"], variables={"chl_oc3": [arr]}
+        )
+        lon, lat = _dc_lonlat_for_pixel(0, 0, 7, 7)
+        stations = _stations_df(
+            [{"date": "2024-01-01", "latitud": lat, "longitud": lon}]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            datacube_crs="EPSG:32721",
+        )
+
+        expected = arr[0:2, 0:2]
+        assert result.loc[0, "chl_oc3_n_valid_px"] == expected.size
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(expected.mean())
+
+    def test_nan_pixels_excluded_from_mean_and_count(self, tmp_path):
+        arr = np.arange(25, dtype="float64").reshape(5, 5)
+        arr[1, 1] = np.nan
+        arr[2, 2] = np.nan
+        dc = _make_datacube(
+            tmp_path / "cube.zarr", times=["2024-01-01"], variables={"chl_oc3": [arr]}
+        )
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        stations = _stations_df(
+            [{"date": "2024-01-01", "latitud": lat, "longitud": lon}]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            datacube_crs="EPSG:32721",
+        )
+
+        window = arr[1:4, 1:4]
+        valid = window[~np.isnan(window)]
+        assert result.loc[0, "chl_oc3_n_valid_px"] == valid.size
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(valid.mean())
+
+    def test_no_matching_date_gives_in_bounds_false(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr", times=["2024-01-01"], variables={"chl_oc3": [arr]}
+        )
+        lon, lat = _dc_lonlat_for_pixel(3, 3, 7, 7)
+        stations = _stations_df(
+            [{"date": "2024-06-15", "latitud": lat, "longitud": lon}]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            datacube_crs="EPSG:32721",
+        )
+
+        assert bool(result.loc[0, "in_bounds"]) is False
+        assert np.isnan(result.loc[0, "chl_oc3_mean"])
+        assert result.loc[0, "chl_oc3_n_valid_px"] == 0
+        assert np.isnan(result.loc[0, "matched_time_delta_days"])
+
+    def test_time_tolerance_days_widens_match(self, tmp_path):
+        arr1 = np.arange(49, dtype="float64").reshape(7, 7)
+        arr2 = arr1 * 5
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01", "2024-01-10"],
+            variables={"chl_oc3": [arr1, arr2]},
+        )
+        lon, lat = _dc_lonlat_for_pixel(3, 3, 7, 7)
+        # 2 days off from 2024-01-10, the nearer of the two cube dates.
+        stations = _stations_df(
+            [{"date": "2024-01-08", "latitud": lat, "longitud": lon}]
+        )
+
+        result_strict = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            time_tolerance_days=0,
+            datacube_crs="EPSG:32721",
+        )
+        assert bool(result_strict.loc[0, "in_bounds"]) is False
+
+        result_wide = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            time_tolerance_days=2,
+            datacube_crs="EPSG:32721",
+        )
+        assert bool(result_wide.loc[0, "in_bounds"]) is True
+        expected_mean = arr2[2:5, 2:5].mean()
+        assert result_wide.loc[0, "chl_oc3_mean"] == pytest.approx(expected_mean)
+        assert result_wide.loc[0, "matched_time_delta_days"] == pytest.approx(2.0)
+
+    def test_out_of_bounds_station_gets_nan_and_flag(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr", times=["2024-01-01"], variables={"chl_oc3": [arr]}
+        )
+        # (0, 0) lon/lat is nowhere near UTM zone 21S — far outside bounds.
+        stations = _stations_df(
+            [{"date": "2024-01-01", "latitud": 0.0, "longitud": 0.0}]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            datacube_crs="EPSG:32721",
+        )
+
+        assert bool(result.loc[0, "in_bounds"]) is False
+        assert np.isnan(result.loc[0, "chl_oc3_mean"])
+        assert result.loc[0, "chl_oc3_n_valid_px"] == 0
+
+    def test_multiple_stations_grouped_by_shared_date_still_correct(self, tmp_path):
+        arr1 = np.arange(49, dtype="float64").reshape(7, 7)
+        arr2 = arr1 * 2
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01", "2024-02-01"],
+            variables={"chl_oc3": [arr1, arr2]},
+        )
+        lon_a, lat_a = _dc_lonlat_for_pixel(1, 1, 7, 7)
+        lon_b, lat_b = _dc_lonlat_for_pixel(5, 5, 7, 7)
+        stations = _stations_df(
+            [
+                {"id": "A", "date": "2024-01-01", "latitud": lat_a, "longitud": lon_a},
+                {"id": "B", "date": "2024-01-01", "latitud": lat_b, "longitud": lon_b},
+                {"id": "A", "date": "2024-02-01", "latitud": lat_a, "longitud": lon_a},
+            ]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            datacube_crs="EPSG:32721",
+        )
+
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(arr1[0:3, 0:3].mean())
+        assert result.loc[1, "chl_oc3_mean"] == pytest.approx(arr1[4:7, 4:7].mean())
+        assert result.loc[2, "chl_oc3_mean"] == pytest.approx(arr2[0:3, 0:3].mean())
+
+    def test_variables_none_picks_up_all_variables(self, tmp_path):
+        arr1 = np.arange(49, dtype="float64").reshape(7, 7)
+        arr2 = arr1 * 2
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01"],
+            variables={"chl_oc3": [arr1], "tur_dogliotti": [arr2]},
+        )
+        lon, lat = _dc_lonlat_for_pixel(3, 3, 7, 7)
+        stations = _stations_df(
+            [{"date": "2024-01-01", "latitud": lat, "longitud": lon}]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc, stations, variables=None, window_size=3, datacube_crs="EPSG:32721"
+        )
+
+        for var in ("chl_oc3", "tur_dogliotti"):
+            assert f"{var}_mean" in result.columns
+            assert f"{var}_n_valid_px" in result.columns
+        assert result.loc[0, "tur_dogliotti_mean"] == pytest.approx(
+            2 * result.loc[0, "chl_oc3_mean"]
+        )
+
+    def test_variables_filters_to_requested_subset(self, tmp_path):
+        arr1 = np.arange(49, dtype="float64").reshape(7, 7)
+        arr2 = arr1 * 2
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01"],
+            variables={"chl_oc3": [arr1], "tur_dogliotti": [arr2]},
+        )
+        lon, lat = _dc_lonlat_for_pixel(3, 3, 7, 7)
+        stations = _stations_df(
+            [{"date": "2024-01-01", "latitud": lat, "longitud": lon}]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc,
+            stations,
+            variables=["chl_oc3"],
+            window_size=3,
+            datacube_crs="EPSG:32721",
+        )
+
+        assert "chl_oc3_mean" in result.columns
+        assert "tur_dogliotti_mean" not in result.columns
+
+    @pytest.mark.parametrize("window_size", [0, -1, 2, 4])
+    def test_invalid_window_size_raises_value_error(self, tmp_path, window_size):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr", times=["2024-01-01"], variables={"chl_oc3": [arr]}
+        )
+        stations = _stations_df(
+            [{"date": "2024-01-01", "latitud": -33.0, "longitud": -58.0}]
+        )
+
+        with pytest.raises(ValueError, match="window_size"):
+            extract_datacube_pixel_values(dc, stations, window_size=window_size)
+
+    def test_negative_time_tolerance_raises_value_error(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr", times=["2024-01-01"], variables={"chl_oc3": [arr]}
+        )
+        stations = _stations_df(
+            [{"date": "2024-01-01", "latitud": -33.0, "longitud": -58.0}]
+        )
+
+        with pytest.raises(ValueError, match="time_tolerance_days"):
+            extract_datacube_pixel_values(dc, stations, time_tolerance_days=-1)
+
+    def test_missing_datacube_raises_file_not_found(self, tmp_path):
+        stations = _stations_df(
+            [{"date": "2024-01-01", "latitud": -33.0, "longitud": -58.0}]
+        )
+
+        with pytest.raises(FileNotFoundError):
+            extract_datacube_pixel_values(tmp_path / "does_not_exist.zarr", stations)
+
+    def test_missing_lat_lon_date_column_raises_value_error(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr", times=["2024-01-01"], variables={"chl_oc3": [arr]}
+        )
+        stations = pd.DataFrame([{"latitud": -33.0, "longitud": -58.0}])  # missing date
+
+        with pytest.raises(ValueError, match="date"):
+            extract_datacube_pixel_values(dc, stations, variables=["chl_oc3"])
+
+    def test_empty_stations_returns_empty_but_correctly_columned(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr", times=["2024-01-01"], variables={"chl_oc3": [arr]}
+        )
+        stations = pd.DataFrame(columns=["id", "date", "latitud", "longitud"])
+
+        result = extract_datacube_pixel_values(dc, stations, variables=["chl_oc3"])
+
+        assert len(result) == 0
+        assert "chl_oc3_mean" in result.columns
+        assert "chl_oc3_n_valid_px" in result.columns
+        assert "in_bounds" in result.columns
+        assert "matched_time_delta_days" in result.columns
+
+    def test_integration_with_pipeline_built_cube(self, tmp_path):
+        # End-to-end sanity check against a cube built the *real* way, via
+        # append_l2w_to_datacube's own reprojection/append logic, not the
+        # hand-built zarr store the other tests use — proves the default
+        # datacube_crs="EPSG:4326" works against real pipeline output.
+        # Reprojection/resampling means we can't assert exact pixel
+        # values here, only that each date yields its own distinct,
+        # finite, in-bounds result.
+        ny, nx = 20, 20
+        arr1 = np.full((ny, nx), 5.0)
+        arr2 = np.full((ny, nx), 20.0)
+        nc1 = _make_l2w_nc(
+            tmp_path / "S2A_MSI_2024_01_15_13_51_35_T21HWD_L2W.nc", {"chl_oc3": arr1}
+        )
+        nc2 = _make_l2w_nc(
+            tmp_path / "S2A_MSI_2024_02_20_13_51_35_T21HWD_L2W.nc", {"chl_oc3": arr2}
+        )
+        dc_path = tmp_path / "real_cube.zarr"
+        append_l2w_to_datacube(
+            nc1, dc_path, target_crs="EPSG:4326", target_resolution=0.0001,
+            variables=["chl_oc3"],
+        )
+        append_l2w_to_datacube(
+            nc2, dc_path, target_crs="EPSG:4326", target_resolution=0.0001,
+            variables=["chl_oc3"],
+        )
+
+        lon, lat = _lonlat_for_pixel(ny // 2, nx // 2, ny, nx)
+        stations = _stations_df(
+            [
+                {"date": "2024-01-15", "latitud": lat, "longitud": lon},
+                {"date": "2024-02-20", "latitud": lat, "longitud": lon},
+            ]
+        )
+
+        result = extract_datacube_pixel_values(
+            dc_path, stations, variables=["chl_oc3"], window_size=3
+        )
+
+        assert bool(result.loc[0, "in_bounds"]) is True
+        assert bool(result.loc[1, "in_bounds"]) is True
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(5.0, abs=0.5)
+        assert result.loc[1, "chl_oc3_mean"] == pytest.approx(20.0, abs=0.5)
+
+
+# ---------------------------------------------------------------------------
+# plot_satellite_vs_insitu
+# ---------------------------------------------------------------------------
+
+
+def _make_campaigns_csv(path: Path, rows: list) -> Path:
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+
+
+class TestPlotSatelliteVsInsitu:
+    def test_returns_dataframe_and_stats_tuple_with_expected_keys(self, tmp_path):
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01", "2024-02-01"],
+            variables={
+                "chl_oc3": [
+                    np.full((5, 5), 5.0),
+                    np.full((5, 5), 8.0),
+                ]
+            },
+        )
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-01-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 4.0,
+                },
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-02-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 9.0,
+                },
+            ],
+        )
+
+        matched, stats = plot_satellite_vs_insitu(
+            csv, dc, tmp_path / "fig.png", datacube_crs="EPSG:32721"
+        )
+
+        assert isinstance(matched, pd.DataFrame)
+        assert set(stats.keys()) == {"n", "r", "r2", "rmse", "bias"}
+        assert stats["n"] == 2
+
+    def test_correlation_matches_manual_numpy_calculation(self, tmp_path):
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        sat_values = [5.0, 8.0, 12.0]
+        insitu_values = [4.0, 9.0, 11.0]
+        dates = ["2024-01-01", "2024-02-01", "2024-03-01"]
+
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=dates,
+            variables={"chl_oc3": [np.full((5, 5), v) for v in sat_values]},
+        )
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": d,
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": v,
+                }
+                for d, v in zip(dates, insitu_values)
+            ],
+        )
+
+        matched, stats = plot_satellite_vs_insitu(
+            csv, dc, tmp_path / "fig.png", datacube_crs="EPSG:32721"
+        )
+
+        sat_arr = np.array(sat_values)
+        insitu_arr = np.array(insitu_values)
+        expected_r = np.corrcoef(sat_arr, insitu_arr)[0, 1]
+        expected_rmse = np.sqrt(np.mean((sat_arr - insitu_arr) ** 2))
+        expected_bias = np.mean(sat_arr - insitu_arr)
+
+        assert stats["r"] == pytest.approx(expected_r)
+        assert stats["r2"] == pytest.approx(expected_r**2)
+        assert stats["rmse"] == pytest.approx(expected_rmse)
+        assert stats["bias"] == pytest.approx(expected_bias)
+        assert stats["n"] == 3
+
+    def test_perfect_correlation_when_satellite_equals_insitu(self, tmp_path):
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        values = [5.0, 8.0, 12.0]
+        dates = ["2024-01-01", "2024-02-01", "2024-03-01"]
+
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=dates,
+            variables={"chl_oc3": [np.full((5, 5), v) for v in values]},
+        )
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": d,
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": v,
+                }
+                for d, v in zip(dates, values)
+            ],
+        )
+
+        matched, stats = plot_satellite_vs_insitu(
+            csv, dc, tmp_path / "fig.png", datacube_crs="EPSG:32721"
+        )
+
+        assert stats["r"] == pytest.approx(1.0)
+        assert stats["rmse"] == pytest.approx(0.0, abs=1e-9)
+        assert stats["bias"] == pytest.approx(0.0, abs=1e-9)
+
+    def test_figure_file_is_created(self, tmp_path):
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01", "2024-02-01"],
+            variables={"chl_oc3": [np.full((5, 5), 5.0), np.full((5, 5), 8.0)]},
+        )
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-01-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 4.0,
+                },
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-02-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 9.0,
+                },
+            ],
+        )
+        fig_path = tmp_path / "reports" / "fig.png"
+
+        plot_satellite_vs_insitu(csv, dc, fig_path, datacube_crs="EPSG:32721")
+
+        assert fig_path.exists()
+        assert fig_path.stat().st_size > 0
+
+    def test_filters_out_decoy_parametro_and_nan_values(self, tmp_path):
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01", "2024-02-01"],
+            variables={"chl_oc3": [np.full((5, 5), 5.0), np.full((5, 5), 8.0)]},
+        )
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-01-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 4.0,
+                },
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-02-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": None,
+                },
+                {
+                    "parametro": "Turbidez",
+                    "date": "2024-01-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 99.0,
+                },
+            ],
+        )
+
+        matched, stats = plot_satellite_vs_insitu(
+            csv, dc, tmp_path / "fig.png", datacube_crs="EPSG:32721"
+        )
+
+        assert stats["n"] == 1
+        assert matched.loc[0, "organized_value"] == pytest.approx(4.0)
+
+    def test_raises_value_error_when_parametro_not_found(self, tmp_path):
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01"],
+            variables={"chl_oc3": [np.full((5, 5), 5.0)]},
+        )
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Turbidez",
+                    "date": "2024-01-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 99.0,
+                }
+            ],
+        )
+
+        with pytest.raises(ValueError, match="Clorofila_a_\\(lab\\)"):
+            plot_satellite_vs_insitu(
+                csv, dc, tmp_path / "fig.png", datacube_crs="EPSG:32721"
+            )
+
+    def test_no_matchups_does_not_raise_and_returns_n_zero(self, tmp_path):
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01"],
+            variables={"chl_oc3": [np.full((5, 5), 5.0)]},
+        )
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-09-15",  # far from the only cube date
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 4.0,
+                }
+            ],
+        )
+        fig_path = tmp_path / "fig.png"
+
+        matched, stats = plot_satellite_vs_insitu(
+            csv, dc, fig_path, datacube_crs="EPSG:32721"
+        )
+
+        assert stats["n"] == 0
+        assert np.isnan(stats["r"])
+        assert np.isnan(stats["rmse"])
+        assert np.isnan(stats["bias"])
+        assert fig_path.exists()
+
+    def test_return_dataframe_false_returns_none(self, tmp_path):
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01", "2024-02-01"],
+            variables={"chl_oc3": [np.full((5, 5), 5.0), np.full((5, 5), 8.0)]},
+        )
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-01-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 4.0,
+                },
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-02-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 9.0,
+                },
+            ],
+        )
+
+        result = plot_satellite_vs_insitu(
+            csv,
+            dc,
+            tmp_path / "fig.png",
+            return_dataframe=False,
+            datacube_crs="EPSG:32721",
+        )
+
+        assert result is None
+
+    def test_small_sample_size_still_computes_but_logs_warning(self, tmp_path, caplog):
+        lon, lat = _dc_lonlat_for_pixel(2, 2, 5, 5)
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01", "2024-02-01"],
+            variables={"chl_oc3": [np.full((5, 5), 5.0), np.full((5, 5), 8.0)]},
+        )
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-01-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 4.0,
+                },
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-02-01",
+                    "latitud": lat,
+                    "longitud": lon,
+                    "organized_value": 9.0,
+                },
+            ],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="aquamatch.utils"):
+            _, stats = plot_satellite_vs_insitu(
+                csv, dc, tmp_path / "fig.png", datacube_crs="EPSG:32721"
+            )
+
+        assert stats["n"] == 2
+        assert any("Small sample size" in m for m in caplog.messages)
+
+    def test_missing_campaigns_csv_raises_file_not_found(self, tmp_path):
+        dc = _make_datacube(
+            tmp_path / "cube.zarr",
+            times=["2024-01-01"],
+            variables={"chl_oc3": [np.full((5, 5), 5.0)]},
+        )
+        with pytest.raises(FileNotFoundError):
+            plot_satellite_vs_insitu(
+                tmp_path / "does_not_exist.csv", dc, tmp_path / "fig.png"
+            )
+
+    def test_missing_datacube_raises_file_not_found(self, tmp_path):
+        csv = _make_campaigns_csv(
+            tmp_path / "campaigns.csv",
+            [
+                {
+                    "parametro": "Clorofila_a_(lab)",
+                    "date": "2024-01-01",
+                    "latitud": -33.0,
+                    "longitud": -58.0,
+                    "organized_value": 4.0,
+                }
+            ],
+        )
+        with pytest.raises(FileNotFoundError):
+            plot_satellite_vs_insitu(
+                csv, tmp_path / "does_not_exist.zarr", tmp_path / "fig.png"
+            )

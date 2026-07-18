@@ -1031,13 +1031,42 @@ class TestGetDownloadStatus:
 
     def test_safe_folder_exists_and_not_empty(self, tmp_path):
         product_id = "S2A_MSIL1C_20250801"
-        safe_folder = tmp_path / product_id
+        safe_folder = tmp_path / f"{product_id}.SAFE"
         safe_folder.mkdir()
         (safe_folder / "dummy.xml").write_text("x")
 
         status = get_download_status(product_id, tmp_path, download_scl=False)
         assert status["safe_exists"] is True
         assert status["all_downloaded"] is True
+
+    def test_safe_folder_found_nested_under_l1c(self, tmp_path):
+        product_id = "S2A_MSIL1C_20250801"
+        safe_folder = (
+            tmp_path / "Sentinel-2" / "MSI" / "L1C" / "2025" / "08" / "01" / f"{product_id}.SAFE"
+        )
+        safe_folder.mkdir(parents=True)
+        (safe_folder / "manifest.safe").write_text("x")
+
+        status = get_download_status(product_id, tmp_path, download_scl=False)
+        assert status["safe_exists"] is True
+
+    def test_safe_folder_found_nested_under_l1c_n0500(self, tmp_path):
+        product_id = "S2A_MSIL1C_20250801"
+        safe_folder = (
+            tmp_path
+            / "Sentinel-2"
+            / "MSI"
+            / "L1C_N0500"
+            / "2020"
+            / "05"
+            / "13"
+            / f"{product_id}.SAFE"
+        )
+        safe_folder.mkdir(parents=True)
+        (safe_folder / "manifest.safe").write_text("x")
+
+        status = get_download_status(product_id, tmp_path, download_scl=False)
+        assert status["safe_exists"] is True
 
     def test_safe_not_downloaded(self, tmp_path):
         status = get_download_status(
@@ -1064,7 +1093,7 @@ class TestGetDownloadStatus:
 
     def test_all_downloaded_false_when_scl_missing(self, tmp_path):
         product_id = "S2A_MSIL1C_20250801"
-        safe_folder = tmp_path / product_id
+        safe_folder = tmp_path / f"{product_id}.SAFE"
         safe_folder.mkdir()
         (safe_folder / "dummy.xml").write_text("x")
 
@@ -1075,7 +1104,7 @@ class TestGetDownloadStatus:
 
     def test_scl_not_found_in_old_flat_location(self, tmp_path):
         product_id = "S2A_MSIL1C_20250801"
-        safe_folder = tmp_path / product_id
+        safe_folder = tmp_path / f"{product_id}.SAFE"
         safe_folder.mkdir()
         (safe_folder / "dummy.xml").write_text("x")
 
