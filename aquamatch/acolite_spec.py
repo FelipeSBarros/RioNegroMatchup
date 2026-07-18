@@ -324,6 +324,14 @@ def append_l2w_to_datacube(
     chunks = zarr_chunks or {"time": 1, "y": 512, "x": 512}
     scene_ds = scene_ds.chunk(chunks)
 
+    # rioxarray's reproject() can leave '_FillValue' in both .attrs (written
+    # for GDAL/CF nodata compatibility) and .encoding (carried over from
+    # decoding the source NetCDF). xarray's zarr writer refuses to silently
+    # reconcile the two, so drop the stale encoding/attrs here.
+    for var in scene_ds.data_vars:
+        scene_ds[var].attrs.pop("_FillValue", None)
+        scene_ds[var].encoding = {}
+
     if not datacube_path.exists():
         scene_ds.to_zarr(datacube_path, mode="w")
     else:
