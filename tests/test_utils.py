@@ -15,17 +15,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
+import rasterio.warp
+import rioxarray  # noqa: F401 - registers the .rio accessor
+import xarray as xr
+from rasterio.crs import CRS
 
 from aquamatch.utils import (
     _flatten_images,
     _iter_bucketed_images,
     _get_download_status,
+    _rio_prepare,
     _best_image_within_tolerance,
     _compute_metrics_for_tolerance,
     analyze_temporal_opportunity,
     audit_downloads,
+    extract_l2w_pixel_values,
 )
 
 # ---------------------------------------------------------------------------
@@ -729,3 +736,317 @@ class TestAuditDownloads:
         out_dir.mkdir()
         df = audit_downloads(str(catalog), str(out_dir))
         assert isinstance(df, pd.DataFrame)
+
+
+# ---------------------------------------------------------------------------
+# _rio_prepare
+# ---------------------------------------------------------------------------
+
+
+class TestRioPrepare:
+    def test_returns_none_triple_when_no_spatial_dims(self):
+        da = xr.DataArray(np.zeros((3, 3)), dims=("a", "b"))
+        result = _rio_prepare(da)
+        assert result == (None, None, None)
+
+    def test_returns_none_triple_when_no_crs(self):
+        da = xr.DataArray(
+            np.zeros((3, 3)),
+            dims=("y", "x"),
+            coords={"y": [0, 1, 2], "x": [0, 1, 2]},
+        )
+        result = _rio_prepare(da)
+        assert result == (None, None, None)
+
+    def test_returns_prepared_array_when_valid(self):
+        da = xr.DataArray(
+            np.zeros((3, 3)),
+            dims=("y", "x"),
+            coords={"y": [0, 1, 2], "x": [0, 1, 2]},
+        )
+        da = da.rio.write_crs(CRS.from_epsg(32721))
+        result_da, x_dim, y_dim = _rio_prepare(da)
+        assert result_da is not None
+        assert x_dim == "x"
+        assert y_dim == "y"
+        assert result_da.rio.crs is not None
+
+
+# ---------------------------------------------------------------------------
+# extract_l2w_pixel_values fixtures
+# ---------------------------------------------------------------------------
+
+L2W_TEST_CRS = CRS.from_epsg(32721)
+L2W_Y0 = 6_300_000.0
+L2W_X0 = 500_000.0
+L2W_RES = 10.0
+
+
+def _l2w_coords(ny: int, nx: int):
+    y = np.linspace(L2W_Y0, L2W_Y0 - (ny - 1) * L2W_RES, ny)
+    x = np.linspace(L2W_X0, L2W_X0 + (nx - 1) * L2W_RES, nx)
+    return y, x
+
+
+def _make_l2w_nc(path: Path, variables: dict) -> Path:
+    """Write a synthetic multi-variable NetCDF shaped like an ACOLITE L2W
+    scene. ``variables`` maps variable name -> 2D numpy array; all arrays
+    must share the same shape."""
+    names = list(variables)
+    ny, nx = variables[names[0]].shape
+    y, x = _l2w_coords(ny, nx)
+
+    data_arrays = {}
+    for name, arr in variables.items():
+        assert arr.shape == (ny, nx)
+        da = xr.DataArray(
+            arr.astype("float32"), dims=("y", "x"), coords={"y": y, "x": x}, name=name
+        )
+        data_arrays[name] = da.rio.write_crs(L2W_TEST_CRS)
+
+    ds = xr.Dataset(data_arrays)
+    ds.to_netcdf(path)
+    return path
+
+
+def _lonlat_for_pixel(row: int, col: int, ny: int, nx: int):
+    """Convert a pixel's exact center to EPSG:4326 lon/lat using the same
+    rasterio.warp.transform the function under test relies on — this
+    guarantees the resulting station coordinate round-trips to exactly
+    this pixel under nearest-neighbor matching."""
+    y, x = _l2w_coords(ny, nx)
+    lons, lats = rasterio.warp.transform(
+        L2W_TEST_CRS, "EPSG:4326", [x[col]], [y[row]]
+    )
+    return lons[0], lats[0]
+
+
+def _stations_df(rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# extract_l2w_pixel_values
+# ---------------------------------------------------------------------------
+
+
+class TestExtractL2wPixelValues:
+    def test_exact_mean_known_neighborhood(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+
+        lon, lat = _lonlat_for_pixel(3, 3, 7, 7)
+        stations = _stations_df(
+            [{"id": "A", "date": "2024-01-01", "latitud": lat, "longitud": lon}]
+        )
+
+        result = extract_l2w_pixel_values(
+            nc, stations, variables=["chl_oc3"], window_size=3
+        )
+
+        expected_mean = arr[2:5, 2:5].mean()
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(expected_mean)
+        assert result.loc[0, "chl_oc3_n_valid_px"] == 9
+        assert bool(result.loc[0, "in_bounds"]) is True
+        assert result.loc[0, "id"] == "A"
+        assert result.loc[0, "date"] == "2024-01-01"
+
+    def test_window_clipped_at_raster_edge(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+
+        # Top-left corner pixel (0, 0) — a full 3x3 window would go out of range.
+        lon, lat = _lonlat_for_pixel(0, 0, 7, 7)
+        stations = _stations_df([{"latitud": lat, "longitud": lon}])
+
+        result = extract_l2w_pixel_values(
+            nc, stations, variables=["chl_oc3"], window_size=3
+        )
+
+        expected = arr[0:2, 0:2]
+        assert result.loc[0, "chl_oc3_n_valid_px"] == expected.size
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(expected.mean())
+        assert bool(result.loc[0, "in_bounds"]) is True
+
+    def test_nan_pixels_excluded_from_mean_and_count(self, tmp_path):
+        arr = np.arange(25, dtype="float64").reshape(5, 5)
+        arr[1, 1] = np.nan
+        arr[2, 2] = np.nan
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+
+        lon, lat = _lonlat_for_pixel(2, 2, 5, 5)
+        stations = _stations_df([{"latitud": lat, "longitud": lon}])
+
+        result = extract_l2w_pixel_values(
+            nc, stations, variables=["chl_oc3"], window_size=3
+        )
+
+        window = arr[1:4, 1:4]
+        valid = window[~np.isnan(window)]
+        assert result.loc[0, "chl_oc3_n_valid_px"] == valid.size
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(valid.mean())
+
+    def test_fully_masked_window_gives_nan_mean_and_zero_count(self, tmp_path):
+        arr = np.full((5, 5), np.nan, dtype="float64")
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+
+        lon, lat = _lonlat_for_pixel(2, 2, 5, 5)
+        stations = _stations_df([{"latitud": lat, "longitud": lon}])
+
+        result = extract_l2w_pixel_values(
+            nc, stations, variables=["chl_oc3"], window_size=3
+        )
+
+        assert result.loc[0, "chl_oc3_n_valid_px"] == 0
+        assert np.isnan(result.loc[0, "chl_oc3_mean"])
+        # Still in bounds — this is "cloud-masked", not "wrong tile".
+        assert bool(result.loc[0, "in_bounds"]) is True
+
+    def test_out_of_bounds_station_gets_nan_and_flag(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+
+        # (0, 0) lon/lat is nowhere near UTM zone 21S — far outside bounds.
+        stations = _stations_df([{"latitud": 0.0, "longitud": 0.0}])
+
+        result = extract_l2w_pixel_values(
+            nc, stations, variables=["chl_oc3"], window_size=3
+        )
+
+        assert bool(result.loc[0, "in_bounds"]) is False
+        assert np.isnan(result.loc[0, "chl_oc3_mean"])
+        assert result.loc[0, "chl_oc3_n_valid_px"] == 0
+
+    def test_multiple_stations_each_get_independent_correct_rows(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+
+        lon_in, lat_in = _lonlat_for_pixel(3, 3, 7, 7)
+        rows = [
+            {
+                "id": "in_bounds_station",
+                "date": "2024-01-01",
+                "s2_tile": "T21HWD",
+                "latitud": lat_in,
+                "longitud": lon_in,
+            },
+            {
+                "id": "oob_station",
+                "date": "2024-01-02",
+                "s2_tile": "T21HWD",
+                "latitud": 0.0,
+                "longitud": 0.0,
+            },
+        ]
+        stations = _stations_df(rows)
+
+        result = extract_l2w_pixel_values(
+            nc, stations, variables=["chl_oc3"], window_size=3
+        )
+
+        assert len(result) == 2
+        assert list(result["id"]) == ["in_bounds_station", "oob_station"]
+        assert list(result["date"]) == ["2024-01-01", "2024-01-02"]
+        assert list(result["s2_tile"]) == ["T21HWD", "T21HWD"]
+
+        expected_mean = arr[2:5, 2:5].mean()
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(expected_mean)
+        assert bool(result.loc[0, "in_bounds"]) is True
+
+        assert np.isnan(result.loc[1, "chl_oc3_mean"])
+        assert bool(result.loc[1, "in_bounds"]) is False
+
+    def test_variables_none_picks_up_all_variables(self, tmp_path):
+        arr1 = np.arange(49, dtype="float64").reshape(7, 7)
+        arr2 = arr1 * 2
+        nc = _make_l2w_nc(
+            tmp_path / "scene_L2W.nc",
+            {"chl_oc3": arr1, "tur_dogliotti": arr2},
+        )
+
+        lon, lat = _lonlat_for_pixel(3, 3, 7, 7)
+        stations = _stations_df([{"latitud": lat, "longitud": lon}])
+
+        result = extract_l2w_pixel_values(nc, stations, variables=None, window_size=3)
+
+        for var in ("chl_oc3", "tur_dogliotti"):
+            assert f"{var}_mean" in result.columns
+            assert f"{var}_n_valid_px" in result.columns
+        assert result.loc[0, "tur_dogliotti_mean"] == pytest.approx(
+            2 * result.loc[0, "chl_oc3_mean"]
+        )
+
+    def test_variables_filters_to_requested_subset(self, tmp_path):
+        arr1 = np.arange(49, dtype="float64").reshape(7, 7)
+        arr2 = arr1 * 2
+        nc = _make_l2w_nc(
+            tmp_path / "scene_L2W.nc",
+            {"chl_oc3": arr1, "tur_dogliotti": arr2},
+        )
+
+        lon, lat = _lonlat_for_pixel(3, 3, 7, 7)
+        stations = _stations_df([{"latitud": lat, "longitud": lon}])
+
+        result = extract_l2w_pixel_values(
+            nc, stations, variables=["chl_oc3"], window_size=3
+        )
+
+        assert "chl_oc3_mean" in result.columns
+        assert "tur_dogliotti_mean" not in result.columns
+
+    def test_nonexistent_variable_raises_value_error(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+        stations = _stations_df([{"latitud": -33.0, "longitud": -58.0}])
+
+        with pytest.raises(ValueError, match="No exportable variables found"):
+            extract_l2w_pixel_values(nc, stations, variables=["does_not_exist"])
+
+    @pytest.mark.parametrize("window_size", [0, -1, 2, 4])
+    def test_invalid_window_size_raises_value_error(self, tmp_path, window_size):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+        stations = _stations_df([{"latitud": -33.0, "longitud": -58.0}])
+
+        with pytest.raises(ValueError, match="window_size"):
+            extract_l2w_pixel_values(nc, stations, window_size=window_size)
+
+    def test_missing_l2w_nc_raises_file_not_found(self, tmp_path):
+        stations = _stations_df([{"latitud": -33.0, "longitud": -58.0}])
+
+        with pytest.raises(FileNotFoundError):
+            extract_l2w_pixel_values(tmp_path / "does_not_exist_L2W.nc", stations)
+
+    def test_empty_stations_returns_empty_but_correctly_columned(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+        stations = pd.DataFrame(columns=["id", "date", "latitud", "longitud"])
+
+        result = extract_l2w_pixel_values(nc, stations, variables=["chl_oc3"])
+
+        assert len(result) == 0
+        assert "chl_oc3_mean" in result.columns
+        assert "chl_oc3_n_valid_px" in result.columns
+        assert "in_bounds" in result.columns
+
+    def test_custom_lat_lon_column_names(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+
+        lon, lat = _lonlat_for_pixel(3, 3, 7, 7)
+        stations = pd.DataFrame([{"lat": lat, "lon": lon}])
+
+        result = extract_l2w_pixel_values(
+            nc, stations, variables=["chl_oc3"], lat_col="lat", lon_col="lon"
+        )
+
+        expected_mean = arr[2:5, 2:5].mean()
+        assert result.loc[0, "chl_oc3_mean"] == pytest.approx(expected_mean)
+
+    def test_missing_lat_lon_column_raises_value_error(self, tmp_path):
+        arr = np.arange(49, dtype="float64").reshape(7, 7)
+        nc = _make_l2w_nc(tmp_path / "scene_L2W.nc", {"chl_oc3": arr})
+        stations = pd.DataFrame([{"latitud": -33.0}])  # missing longitud
+
+        with pytest.raises(ValueError, match="lon_col"):
+            extract_l2w_pixel_values(nc, stations, variables=["chl_oc3"])

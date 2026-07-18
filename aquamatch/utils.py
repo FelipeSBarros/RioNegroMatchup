@@ -3,8 +3,9 @@ utils.py
 ========
 Utility functions for the aquamatch workflow.
 
-Provides temporal tolerance analysis and campaign-level download auditing
-for Sentinel-2 catalog data.
+Provides temporal tolerance analysis, campaign-level download auditing,
+and L2W pixel-value extraction for satellite-vs-in-situ matchup analysis
+of Sentinel-2 catalog data.
 """
 
 from __future__ import annotations
@@ -217,6 +218,39 @@ def _compute_metrics_for_tolerance(catalog_entries: list[dict], max_delta: int) 
         "mean_cloud_cover": round(mean_cc, 2) if mean_cc is not None else None,
         "median_cloud_cover": round(median_cc, 2) if median_cc is not None else None,
     }
+
+
+def _rio_prepare(da):
+    """
+    Set rioxarray spatial dims on ``da`` and confirm it has a CRS.
+
+    Mirrors the x/y dimension discovery used in
+    ``aquamatch.acolite_spec.append_l2w_to_datacube`` — duplicated here
+    rather than imported, for the same reason ``audit_downloads`` avoids
+    importing ``aquamatch.sentinel_data``: this module is kept free of
+    heavy/side-effecting imports at module scope.
+
+    Parameters
+    ----------
+    da:
+        An ``xarray.DataArray`` that may or may not have recognizable
+        spatial dimensions.
+
+    Returns
+    -------
+    tuple
+        ``(da, x_dim, y_dim)`` with spatial dims set via
+        ``da.rio.set_spatial_dims``, or ``(None, None, None)`` if no
+        recognizable x/y dimension pair exists, or the array has no CRS.
+    """
+    x_dim = next((d for d in da.dims if d in ("x", "lon", "longitude")), None)
+    y_dim = next((d for d in da.dims if d in ("y", "lat", "latitude")), None)
+    if x_dim is None or y_dim is None:
+        return None, None, None
+    da = da.rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim)
+    if da.rio.crs is None:
+        return None, None, None
+    return da, x_dim, y_dim
 
 
 # ---------------------------------------------------------------------------
@@ -528,3 +562,243 @@ def audit_downloads(
     logger.info(f"Audit complete: {n_downloaded}/{len(df)} scenes fully downloaded.")
 
     return df
+
+
+def extract_l2w_pixel_values(
+    l2w_nc: Path | str,
+    stations: pd.DataFrame,
+    variables: Optional[list[str]] = None,
+    window_size: int = 3,
+    lat_col: str = "latitud",
+    lon_col: str = "longitud",
+) -> pd.DataFrame:
+    """
+    Extract mean L2W pixel values in a window around each station.
+
+    For every row in ``stations``, finds the ACOLITE L2W raster pixel
+    nearest that station's (``lat_col``, ``lon_col``) coordinate — assumed
+    EPSG:4326/WGS84, matching the project's campaign CSVs — and computes
+    the NaN-aware mean of a ``window_size`` x ``window_size`` pixel window
+    centered on it, for every requested variable.
+
+    This is step 1 of a future satellite-vs-in-situ matchup workflow: the
+    input ``stations`` table is returned with new columns *appended*
+    (never a fresh minimal DataFrame), so identifying columns (station
+    id, date, etc.) survive for a later join against measured values.
+
+    Stations outside the raster's bounding box entirely get NaN for every
+    ``*_mean`` column, 0 for every ``*_n_valid_px`` column, and
+    ``in_bounds=False`` — nearest-neighbor indexing would otherwise always
+    return *some* pixel, however far away, silently producing a
+    meaningless value.
+
+    Parameters
+    ----------
+    l2w_nc:
+        Path to a single ACOLITE L2W NetCDF file.
+    stations:
+        DataFrame with one row per station/date, containing at least
+        ``lat_col`` and ``lon_col``. Returned unmodified except for
+        appended columns.
+    variables:
+        L2W data variables to extract. If ``None``, auto-discovers all
+        real data variables (excludes grid-mapping helpers, requires
+        ``ndim >= 2``). If given, filtered to what's actually present.
+    window_size:
+        Side length of the square pixel window. Must be a positive odd
+        integer. Defaults to ``3``.
+    lat_col, lon_col:
+        Station latitude/longitude column names. Default to
+        ``"latitud"``/``"longitud"`` to match the project's real data.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Copy of ``stations`` with, per extracted variable ``var``:
+
+        * ``{var}_mean`` (float) — NaN-aware mean of the pixel window.
+        * ``{var}_n_valid_px`` (int) — non-NaN pixels contributing to the
+          mean (out of up to ``window_size**2``).
+
+        Plus a shared ``in_bounds`` (bool) column.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``l2w_nc`` does not exist.
+    ValueError
+        If ``window_size`` isn't a positive odd integer; if
+        ``lat_col``/``lon_col`` aren't columns of ``stations``; if the
+        variable set (after filtering) is empty; or no variable has
+        usable spatial dims/CRS.
+    ImportError
+        If xarray, rioxarray, or rasterio aren't installed.
+
+    Examples
+    --------
+    >>> from aquamatch.utils import extract_l2w_pixel_values
+    >>> stations = pd.read_csv("data/monitoring_data/campaigns_unique_data.csv")
+    >>> result = extract_l2w_pixel_values(
+    ...     l2w_nc="data/acolite_output/.../S2A_..._L2W.nc",
+    ...     stations=stations,
+    ...     variables=["chl_oc3"],
+    ... )
+    >>> result[["date", "latitud", "longitud",
+    ...         "chl_oc3_mean", "chl_oc3_n_valid_px", "in_bounds"]]
+    """
+    try:
+        import numpy as np
+        import xarray as xr
+        import rioxarray  # noqa: F401 - registers the .rio accessor
+        import rasterio.warp
+    except ImportError as exc:
+        raise ImportError(
+            "extract_l2w_pixel_values requires xarray, rioxarray, and rasterio.\n"
+            f"Original error: {exc}"
+        ) from exc
+
+    l2w_nc = Path(l2w_nc)
+    if not l2w_nc.exists():
+        raise FileNotFoundError(f"L2W NetCDF not found: {l2w_nc}")
+
+    if window_size < 1 or window_size % 2 == 0:
+        raise ValueError(
+            f"window_size must be a positive odd integer, got {window_size}."
+        )
+    if lat_col not in stations.columns:
+        raise ValueError(f"lat_col '{lat_col}' not found in stations columns.")
+    if lon_col not in stations.columns:
+        raise ValueError(f"lon_col '{lon_col}' not found in stations columns.")
+
+    # Duplicated from aquamatch.acolite_spec.append_l2w_to_datacube rather
+    # than imported — see audit_downloads for why this module avoids
+    # importing sibling modules with heavier import footprints.
+    GRID_MAPPING_NAMES = {
+        "transverse_mercator",
+        "polar_stereographic",
+        "lambert_conformal_conic",
+        "spatial_ref",
+        "crs",
+        "grid_mapping",
+    }
+
+    ds = xr.open_dataset(l2w_nc, decode_coords="all")
+    try:
+        data_vars = [
+            v for v in ds.data_vars if v not in GRID_MAPPING_NAMES and ds[v].ndim >= 2
+        ]
+        if variables is not None:
+            data_vars = [v for v in variables if v in data_vars]
+        if not data_vars:
+            raise ValueError(f"No exportable variables found in {l2w_nc.name}.")
+
+        out = stations.copy()
+
+        if out.empty:
+            for var in data_vars:
+                out[f"{var}_mean"] = pd.Series(dtype="float64")
+                out[f"{var}_n_valid_px"] = pd.Series(dtype="int64")
+            out["in_bounds"] = pd.Series(dtype="bool")
+            logger.info(
+                "stations is empty — returning correctly-columned empty result."
+            )
+            return out
+
+        # --- Establish pixel geometry from the first usable variable ---
+        ref_var = ref_da = ref_x_dim = ref_y_dim = None
+        for var in data_vars:
+            da, x_dim, y_dim = _rio_prepare(ds[var])
+            if da is not None:
+                ref_var, ref_da, ref_x_dim, ref_y_dim = var, da, x_dim, y_dim
+                break
+
+        if ref_var is None:
+            raise ValueError(
+                f"No variables with valid spatial dimensions/CRS found in "
+                f"{l2w_nc.name}."
+            )
+
+        raster_crs = ref_da.rio.crs
+        n_rows = ref_da.sizes[ref_y_dim]
+        n_cols = ref_da.sizes[ref_x_dim]
+        minx, miny, maxx, maxy = ref_da.rio.bounds()
+
+        logger.info(
+            f"Extracting {len(data_vars)} variable(s) for {len(out)} station(s) "
+            f"from {l2w_nc.name} (CRS={raster_crs}, grid={n_rows}x{n_cols}, "
+            f"window_size={window_size})."
+        )
+
+        lons = out[lon_col].to_numpy(dtype="float64")
+        lats = out[lat_col].to_numpy(dtype="float64")
+        xs_native, ys_native = rasterio.warp.transform(
+            "EPSG:4326", raster_crs, lons.tolist(), lats.tolist()
+        )
+        xs_native = np.asarray(xs_native)
+        ys_native = np.asarray(ys_native)
+
+        in_bounds = (
+            (xs_native >= minx)
+            & (xs_native <= maxx)
+            & (ys_native >= miny)
+            & (ys_native <= maxy)
+        )
+        n_oob = int((~in_bounds).sum())
+        if n_oob:
+            logger.info(
+                f"{n_oob}/{len(out)} station(s) fall outside the raster's "
+                "bounding box — will get NaN mean(s) and in_bounds=False."
+            )
+
+        x_index = ref_da.get_index(ref_x_dim)
+        y_index = ref_da.get_index(ref_y_dim)
+        col_pos = x_index.get_indexer(xs_native, method="nearest")
+        row_pos = y_index.get_indexer(ys_native, method="nearest")
+
+        half = window_size // 2
+
+        for var in data_vars:
+            da, x_dim, y_dim = _rio_prepare(ds[var])
+            if da is None:
+                logger.warning(f"Skipping '{var}': no recognizable x/y dims or CRS.")
+                continue
+            if da.sizes[y_dim] != n_rows or da.sizes[x_dim] != n_cols:
+                logger.warning(
+                    f"Skipping '{var}': grid shape {da.sizes[y_dim]}x{da.sizes[x_dim]} "
+                    f"does not match reference grid {n_rows}x{n_cols}."
+                )
+                continue
+
+            values = da.transpose(y_dim, x_dim, ...).values
+            values = np.squeeze(values)
+            if values.ndim != 2:
+                logger.warning(
+                    f"Skipping '{var}': data is not 2-D after squeezing "
+                    "extra dimensions."
+                )
+                continue
+
+            means = np.full(len(out), np.nan, dtype="float64")
+            n_valid = np.zeros(len(out), dtype="int64")
+
+            for i in range(len(out)):
+                if not in_bounds[i]:
+                    continue
+                r, c = int(row_pos[i]), int(col_pos[i])
+                r0, r1 = max(0, r - half), min(n_rows, r + half + 1)
+                c0, c1 = max(0, c - half), min(n_cols, c + half + 1)
+                window = values[r0:r1, c0:c1]
+                valid = ~np.isnan(window)
+                n = int(valid.sum())
+                n_valid[i] = n
+                if n > 0:
+                    means[i] = float(np.nanmean(window))
+
+            out[f"{var}_mean"] = means
+            out[f"{var}_n_valid_px"] = n_valid
+
+        out["in_bounds"] = in_bounds
+
+        return out
+    finally:
+        ds.close()
