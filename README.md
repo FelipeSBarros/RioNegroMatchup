@@ -511,3 +511,91 @@ If your target variable changes slowly (e.g. long-term turbidity trends in a lar
 If your variable is highly dynamic (e.g. algal bloom events, flood pulses), even d=1 may introduce unacceptable temporal mismatch and you should be cautious about any row beyond d=0.
 
 The cloud cover column is a sanity check — if mean cloud cover were climbing sharply with tolerance (say, above 20–30%), it would signal that the additional scenes being recovered are systematically cloudy and may not produce usable retrievals even after atmospheric correction.
+
+### L2W pixel-value extraction at campaign stations
+
+Once you have an ACOLITE L2W product and a table of field-campaign station coordinates, `extract_l2w_pixel_values` extracts the corresponding pixel value at each station — the mean of a small window (default 3x3) centered on the pixel nearest the station's coordinates. This is the first step toward comparing satellite-derived values against in-situ measurements: it appends new columns to your existing station table rather than returning a fresh one, so identifying columns (station id, date, tile, etc.) survive for a later join against measured values.
+
+Stations whose coordinates fall outside the scene entirely (e.g. the wrong Sentinel-2 tile) are flagged rather than given a misleading nearest-edge value — `in_bounds=False` distinguishes "wrong tile" from "in bounds but every pixel in the window is cloud-masked" (both give `NaN` for the mean, only the former also gives `in_bounds=False`).
+
+```python
+from aquamatch.utils import extract_l2w_pixel_values
+import pandas as pd
+
+stations = pd.read_csv("data/monitoring_data/campaigns_unique_data.csv")
+
+result = extract_l2w_pixel_values(
+    l2w_nc="data/acolite_output/.../S2B_MSI_2024_07_08_13_51_48_T21HVD_L2W.nc",
+    stations=stations,
+    variables=["chl_oc3"],
+)
+
+print(result[["date", "s2_tile", "chl_oc3_mean", "chl_oc3_n_valid_px", "in_bounds"]])
+```
+
+```
+         date s2_tile  chl_oc3_mean  chl_oc3_n_valid_px  in_bounds
+0  2025-11-04   21HVD      9.082612                    9       True
+1  2025-08-13   21HWD           NaN                    0      False
+2  2020-02-05   21HVD           NaN                    0       True
+```
+
+(Row 0 is in the scene and mostly cloud-free — 9/9 valid pixels. Row 1 is on a different tile than this scene, correctly flagged out of bounds. Row 2 is on the right tile but lands on a masked pixel — `in_bounds=True` with `n_valid_px=0` shows it's cloud/land masking, not a tile mismatch.)
+
+For each requested variable `var`, the returned DataFrame gains:
+
+| Column | Type | Description |
+|--------|------|--------------|
+| `{var}_mean` | float | NaN-aware mean of the pixel window, or `NaN` if out of bounds or fully masked |
+| `{var}_n_valid_px` | int | Non-NaN pixels contributing to the mean (out of up to `window_size**2`) — useful for judging extraction quality |
+| `in_bounds` | bool | Whether the station falls within the scene's footprint at all (shared across all variables) |
+
+By default `variables=None` extracts every real data variable in the file, `window_size` must be a positive odd integer, and `lat_col`/`lon_col` default to `"latitud"`/`"longitud"` to match this project's campaign CSVs — pass your own column names if your station table differs. This works on one L2W scene at a time; matching each station to its temporally-closest scene is a planned follow-up, not yet implemented.
+
+### Download completeness audit
+
+Before atmospheric correction, it's useful to know exactly which cataloged scenes are actually on disk. `audit_downloads` compares the catalog from Step 2 against a download root and reports SAFE/SCL presence per scene — one row per image across all buckets (`same_day`, `previous`, `posterior`).
+
+```python
+from aquamatch.utils import audit_downloads
+
+df = audit_downloads(
+    catalog_json="data/sentinel_downloads/sentinel_catalog.json",
+    output_dir="data/sentinel_downloads",
+)
+
+print(df.head(4))
+print(df["bucket"].value_counts())
+print(f"{df['all_downloaded'].sum()}/{len(df)} scenes fully downloaded")
+```
+
+```
+   field_date                                                          scene_id  delta_days  cloud_cover  safe_exists  scl_exists  all_downloaded    bucket
+0  2025-11-05  S2B_MSIL1C_20251103T134659_N0511_R024_T21HVD_20251103T170338.SAFE           2         0.00        False       False           False  previous
+1  2025-11-05  S2B_MSIL1C_20251103T134659_N0511_R024_T21HUD_20251103T170338.SAFE           2         0.00        False       False           False  previous
+2  2025-11-05  S2A_MSIL1C_20251031T135131_N0511_R024_T21HUD_20251031T152617.SAFE           5         6.77        False       False           False  previous
+3  2025-11-05  S2A_MSIL1C_20251031T135131_N0511_R024_T21HVD_20251031T152617.SAFE           5        35.71        False       False           False  previous
+
+bucket
+previous     136
+posterior    126
+same_day      28
+Name: count, dtype: int64
+
+0/290 scenes fully downloaded
+```
+
+The returned DataFrame has one row per cataloged image:
+
+| Column | Type | Description |
+|--------|------|--------------|
+| `field_date` | str | Field sampling date |
+| `scene_id` | str | Sentinel-2 scene identifier |
+| `delta_days` | int | Days between the scene acquisition and the field date |
+| `cloud_cover` | float | Scene cloud cover (%) |
+| `safe_exists` | bool | Whether the SAFE folder is present under `output_dir` |
+| `scl_exists` | bool or None | Whether the SCL GeoTIFF is present (`None` when `download_scl=False`) |
+| `all_downloaded` | bool | Whether everything required for this scene is already on disk |
+| `bucket` | str or None | `same_day`, `previous`, or `posterior` (`None` for legacy flat-list catalogs with no bucket info) |
+
+Set `download_scl=False` if your workflow doesn't need SCL files — `scl_exists` and the `all_downloaded` check then depend only on the SAFE folder. Filter `df[~df["all_downloaded"]]` to get exactly the scenes still missing before deciding what to (re)download.
