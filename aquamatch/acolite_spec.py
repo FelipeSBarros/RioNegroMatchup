@@ -333,9 +333,9 @@ def append_l2w_to_datacube(
         scene_ds[var].encoding = {}
 
     if not datacube_path.exists():
-        scene_ds.to_zarr(datacube_path, mode="w")
+        scene_ds.to_zarr(datacube_path, mode="w", consolidated=False)
     else:
-        existing = xr.open_zarr(datacube_path)
+        existing = xr.open_zarr(datacube_path, consolidated=False)
         existing_times = pd.DatetimeIndex(existing.time.values)
         existing.close()
         if date.normalize() in existing_times.normalize():
@@ -343,7 +343,7 @@ def append_l2w_to_datacube(
                 logger.warning(f"Date {date.date()} already in datacube — skipping.")
                 ds.close()
                 return datacube_path
-        scene_ds.to_zarr(datacube_path, append_dim="time")
+        scene_ds.to_zarr(datacube_path, append_dim="time", consolidated=False)
 
     ds.close()
     return datacube_path
@@ -399,7 +399,9 @@ def convert_l2w_to_zarr_cog(
             import shutil
 
             shutil.rmtree(zarr_path)
-        ds[export_vars].chunk(zarr_chunks).to_zarr(zarr_path, mode="w")
+        ds[export_vars].chunk(zarr_chunks).to_zarr(
+            zarr_path, mode="w", consolidated=False
+        )
 
     cog_paths = []
     for var in export_vars:
