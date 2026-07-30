@@ -4,8 +4,8 @@ Source diagram for the "Overview" section of [`README.md`](./README.md). Edit th
 
 ```mermaid
 flowchart TD
-    OAN["OAN xlsx files"]:::io
-    STEP1["<b>Step 1 — In-situ data</b><br/>run_insitu_pipeline()<br/><i>clean OAN campaigns, assign S2 tile</i>"]:::step
+    OAN["campaigns xlsx/csv files"]:::io
+    STEP1["<b>Step 1 — In-situ data</b><br/>run_insitu_pipeline()<br/><i>clean/organize campaigns data, assign S2 tile</i>"]:::step
     ORG["campaigns_organized.csv"]:::artifact
     UNIQ["campaigns_unique_data.csv"]:::artifact
 
@@ -82,6 +82,7 @@ flowchart TD
     classDef scl fill:#4338ca,stroke:#33269a,color:#ffffff
     classDef config fill:#92400e,stroke:#733309,color:#ffffff
     classDef utility fill:#1d4ed8,stroke:#1638a8,color:#ffffff
+
 ```
 
 **Color coding**: teal for the five pipeline steps, gray/neutral for data artifacts and external inputs, purple for the SCL/datacube/water-quality-product components, amber for the YAML orchestration layer, and blue for the analysis/validation utilities (`analyze_temporal_opportunity`, `audit_downloads`, `extract_l2w_pixel_values`, `extract_datacube_pixel_values`, `plot_satellite_vs_insitu`).
